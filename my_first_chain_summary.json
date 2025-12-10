@@ -1,0 +1,12 @@
+{
+  "chainName": "my first chain",
+  "tokenName": "my chain 1",
+  "tokenSymbol": "mfc",
+  "initialSupply": 1000,
+  "decimals": 18,
+  "consensus": "Proof of Authority",
+  "modules": [
+    "governance"
+  ],
+  "timestamp": "2025-05-25T18:23:30.124Z"
+}

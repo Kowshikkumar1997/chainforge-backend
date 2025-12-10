@@ -1,0 +1,13 @@
+{
+  "chainName": "my first chain",
+  "consensus": "Proof of Authority",
+  "modules": [
+    "governance"
+  ],
+  "token": {
+    "name": "my chain 1",
+    "symbol": "mfc",
+    "initialSupply": 1000,
+    "decimals": 18
+  }
+}

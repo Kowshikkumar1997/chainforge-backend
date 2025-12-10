@@ -1,0 +1,14 @@
+{
+  "chainName": "TestChain",
+  "consensus": "Proof of Authority",
+  "modules": [
+    "governance",
+    "tokenTransfer"
+  ],
+  "token": {
+    "name": "TestToken",
+    "symbol": "TTK",
+    "initialSupply": 1000,
+    "decimals": 18
+  }
+}
