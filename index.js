@@ -6,8 +6,17 @@
  * - Contract deployment orchestration (via spawned Hardhat)
  * - Deployment metadata persistence
  * - Mint and balance operations
+ *
+ * Render deployment notes:
+ * - Must listen on process.env.PORT
+ * - Use an ephemeral writable directory for runtime artifacts (e.g. /tmp)
+ * - Configure CORS explicitly for the hosted frontend origin(s)
  */
-require("dotenv").config();
+
+if (process.env.NODE_ENV !== "production") {
+  require("dotenv").config();
+}
+
 const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
@@ -27,30 +36,61 @@ const runHardhatDeploy = require("./utils/runHardhatDeploy");
 const app = express();
 const PORT = process.env.PORT ? Number(process.env.PORT) : 4000;
 
-app.use(cors());
+// -----------------------------
+// CORS (Render/Vercel-safe)
+// -----------------------------
+const allowedOrigins = (process.env.FRONTEND_ORIGIN || "")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      // Allow non-browser requests (curl, server-to-server, health checks)
+      if (!origin) return callback(null, true);
+
+      // If no FRONTEND_ORIGIN is configured, fail closed in production
+      if (process.env.NODE_ENV === "production" && allowedOrigins.length === 0) {
+        return callback(new Error("CORS is not configured (FRONTEND_ORIGIN missing)."));
+      }
+
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      return callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
+  })
+);
+
 app.use(express.json());
 
+// -----------------------------
+// Runtime directories
+// -----------------------------
+// Render containers provide a writable /tmp directory. This keeps runtime artifacts stable.
+// Public URL routes remain the same; only the storage location is production-safe.
+const RUNTIME_BASE_DIR = process.env.RUNTIME_BASE_DIR || "/tmp/chainforge";
+
+const deploymentsDir = path.join(RUNTIME_BASE_DIR, "deployments");
+const generatedContractsDir = path.join(RUNTIME_BASE_DIR, "generated_contracts");
+const generatedChainsDir = path.join(RUNTIME_BASE_DIR, "generated_chains");
+
+function ensureDir(dirPath) {
+  if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
+}
+
+ensureDir(deploymentsDir);
+ensureDir(generatedContractsDir);
+ensureDir(generatedChainsDir);
+
+// -----------------------------
 // Static folders for downloads
-app.use(
-  "/generated_contracts",
-  express.static(path.join(__dirname, "generated_contracts"))
-);
+// -----------------------------
+app.use("/generated_contracts", express.static(generatedContractsDir));
+app.use("/generated_chains", express.static(generatedChainsDir));
 
-app.use(
-  "/generated_chains",
-  express.static(path.join(__dirname, "generated_chains"))
-);
-
-// Ensure runtime directories exist
-const deploymentsDir = path.join(__dirname, "deployments");
-if (!fs.existsSync(deploymentsDir)) fs.mkdirSync(deploymentsDir, { recursive: true });
-
-const generatedContractsDir = path.join(__dirname, "generated_contracts");
-if (!fs.existsSync(generatedContractsDir)) fs.mkdirSync(generatedContractsDir, { recursive: true });
-
-const generatedChainsDir = path.join(__dirname, "generated_chains");
-if (!fs.existsSync(generatedChainsDir)) fs.mkdirSync(generatedChainsDir, { recursive: true });
-
+// -----------------------------
+// Helpers
+// -----------------------------
 function zipFolder(sourceDir, outPath) {
   return new Promise((resolve, reject) => {
     const output = fs.createWriteStream(outPath);
@@ -76,6 +116,17 @@ function badRequest(res, message) {
 function serverError(res, message = "Internal server error") {
   return res.status(500).json({ message });
 }
+
+// -----------------------------
+// Health check
+// -----------------------------
+app.get("/health", (req, res) => {
+  return res.status(200).json({
+    status: "ok",
+    service: "chainforge-backend",
+    timestamp: new Date().toISOString(),
+  });
+});
 
 // -----------------------------
 // Create Token (generate + deploy)
@@ -200,7 +251,7 @@ app.post("/create-token", async (req, res) => {
     fs.writeFileSync(deploymentPath, JSON.stringify(deploymentRecord, null, 2), "utf-8");
     console.log("[create-token] Deployment record persisted", { requestId, file: deploymentFilename });
 
-    // Save config file into generated_contracts (optional, used in zip bundle)
+    // Save config file into generated_contracts (used in zip bundle)
     const configFilename = `${cleanContractName}_config.json`;
     const configPath = path.join(generatedContractsDir, configFilename);
     fs.writeFileSync(configPath, JSON.stringify(deploymentRecord, null, 2), "utf-8");
