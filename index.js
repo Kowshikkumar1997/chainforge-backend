@@ -1,27 +1,56 @@
+/**
+ * ChainForge Backend
+ *
+ * API entry point responsible for:
+ * - Token generation (ERC20, ERC721, ERC1155)
+ * - Contract deployment orchestration (via spawned Hardhat)
+ * - Deployment metadata persistence
+ * - Mint and balance operations
+ */
+require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
-const hre = require("hardhat");
 const archiver = require("archiver");
+
+const { mintToken, checkBalance } = require("./routes/tokenActions");
 
 const {
   generateERC20Contract,
   generateERC721Contract,
   generateERC1155Contract,
 } = require("./utils/generateSolidityContract");
-// const deployDynamicToken = require("./utils/deployDynamicAsset"); // only if you actually use this
+
+const runHardhatDeploy = require("./utils/runHardhatDeploy");
 
 const app = express();
-const PORT = 4000;
+const PORT = process.env.PORT ? Number(process.env.PORT) : 4000;
 
-// ---------------- Middleware ----------------
 app.use(cors());
 app.use(express.json());
-app.use("/generated_contracts", express.static(path.join(__dirname, "generated_contracts")));
-app.use("/generated_chains", express.static(path.join(__dirname, "generated_chains")));
 
-// ---------------- Zip Helper ----------------
+// Static folders for downloads
+app.use(
+  "/generated_contracts",
+  express.static(path.join(__dirname, "generated_contracts"))
+);
+
+app.use(
+  "/generated_chains",
+  express.static(path.join(__dirname, "generated_chains"))
+);
+
+// Ensure runtime directories exist
+const deploymentsDir = path.join(__dirname, "deployments");
+if (!fs.existsSync(deploymentsDir)) fs.mkdirSync(deploymentsDir, { recursive: true });
+
+const generatedContractsDir = path.join(__dirname, "generated_contracts");
+if (!fs.existsSync(generatedContractsDir)) fs.mkdirSync(generatedContractsDir, { recursive: true });
+
+const generatedChainsDir = path.join(__dirname, "generated_chains");
+if (!fs.existsSync(generatedChainsDir)) fs.mkdirSync(generatedChainsDir, { recursive: true });
+
 function zipFolder(sourceDir, outPath) {
   return new Promise((resolve, reject) => {
     const output = fs.createWriteStream(outPath);
@@ -36,92 +65,55 @@ function zipFolder(sourceDir, outPath) {
   });
 }
 
-// ---------------- Deploy Helper (SAFE, FINAL) ----------------
-async function deployContract(contractFilename, constructorArgs = []) {
-  try {
-    console.log("\n===============================");
-    console.log("🚀 Starting Deployment");
-    console.log("===============================");
-    console.log("📄 File:", contractFilename);
-    console.log("⚙️ Constructor Args:", constructorArgs);
-
-    // 1. Read generated contract
-    const generatedPath = path.join(__dirname, "generated_contracts", contractFilename);
-    const solidityCode = fs.readFileSync(generatedPath, "utf8");
-
-    // 2. Extract contract name from Solidity
-    const match = solidityCode.match(/contract\s+(\w+)/);
-    if (!match) throw new Error(`❌ Could not extract contract name from ${contractFilename}`);
-    const contractName = match[1];
-    console.log("📝 Extracted Contract Name:", contractName);
-
-    // 3. Prepare Hardhat contracts dir
-    const contractsDir = path.join(__dirname, "contracts");
-    if (!fs.existsSync(contractsDir)) fs.mkdirSync(contractsDir);
-
-    // 4. CLEAN OLD VERSIONS OF THIS CONTRACT (by prefix)
-    const existing = fs.readdirSync(contractsDir);
-    existing.forEach((file) => {
-      // Example: firsttoken_ERC20_... starts with "firsttoken"
-      if (file.startsWith(contractName + "_")) {
-        fs.unlinkSync(path.join(contractsDir, file));
-        console.log("🗑️ Deleted old contract file:", file);
-      }
-    });
-
-    // 5. Copy new .sol into /contracts
-    const destinationPath = path.join(contractsDir, contractFilename);
-    fs.copyFileSync(generatedPath, destinationPath);
-    console.log("📁 Copied contract into /contracts:", destinationPath);
-
-    // 6. Clean + Compile (wipes old artifacts safely)
-    await hre.run("clean");
-    console.log("🧹 Hardhat cleaned");
-
-    await hre.run("compile");
-    console.log("🔨 Hardhat compiled contracts");
-
-    // 7. Deploy
-    const [deployer] = await hre.ethers.getSigners();
-    console.log("👤 Deployer Address:", deployer.address);
-
-    // IMPORTANT: use only contractName here, NOT filename
-    const ContractFactory = await hre.ethers.getContractFactory(contractName);
-    const contract = await ContractFactory.deploy(...constructorArgs);
-
-    console.log("⏳ Waiting for deployment...");
-    await contract.waitForDeployment();
-
-    const deployedAddress = await contract.getAddress();
-    console.log(`🎉 SUCCESS — ${contractName} deployed at: ${deployedAddress}`);
-
-    return deployedAddress;
-  } catch (error) {
-    console.error("❌ DEPLOY ERROR:", error);
-    throw error;
-  }
+function sanitizeContractName(name) {
+  return String(name || "").replace(/\s+/g, "").trim();
 }
 
-// ---------------- Create Token Endpoint ----------------
+function badRequest(res, message) {
+  return res.status(400).json({ message });
+}
+
+function serverError(res, message = "Internal server error") {
+  return res.status(500).json({ message });
+}
+
+// -----------------------------
+// Create Token (generate + deploy)
+// -----------------------------
 app.post("/create-token", async (req, res) => {
+  const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
   try {
-    const { type, tokenName, tokenSymbol, initialSupply, decimals, modules, baseURI } = req.body;
+    const {
+      type,
+      tokenName,
+      tokenSymbol,
+      initialSupply,
+      decimals,
+      modules,
+      baseURI,
+    } = req.body || {};
+
+    console.log("[create-token] Request received", {
+      requestId,
+      type,
+      tokenName,
+      timestamp: new Date().toISOString(),
+    });
 
     // Validation
-    if (!tokenName) {
-      return res.status(400).json({ message: "Token Name is required." });
-    }
+    if (!tokenName) return badRequest(res, "tokenName is required.");
 
-    // ERC20 & ERC721 require symbol, ERC1155 does not
     if ((type === "ERC20" || type === "ERC721") && !tokenSymbol) {
-      return res.status(400).json({ message: "Token Symbol is required for ERC20 and ERC721." });
-    }
-    // ✅ ERC1155 requires baseURI
-    if (type === "ERC1155" && !baseURI) {
-      return res.status(400).json({ message: "baseURI is required for ERC1155." });
+      return badRequest(res, "tokenSymbol is required for ERC20 and ERC721.");
     }
 
-    let filenames;
+    if (type === "ERC1155" && !baseURI) {
+      return badRequest(res, "baseURI is required for ERC1155.");
+    }
+
+    // Generate contract(s)
+    let filenames = [];
 
     if (type === "ERC20") {
       filenames = generateERC20Contract({
@@ -142,125 +134,184 @@ app.post("/create-token", async (req, res) => {
         baseURI,
       });
     } else {
-      return res.status(400).json({ message: "Invalid token type." });
+      return badRequest(res, "Invalid token type. Use ERC20, ERC721, or ERC1155.");
     }
 
-    console.log("📄 Generated Contract Files:", filenames);
+    if (!Array.isArray(filenames) || filenames.length === 0) {
+      console.error("[create-token] No contract files generated", { requestId, type, tokenName });
+      return serverError(res, "Contract generation failed.");
+    }
+
+    console.log("[create-token] Generated contract files", { requestId, filenames });
 
     const contractFile = filenames[0];
+    const cleanContractName = sanitizeContractName(tokenName);
 
-    // Constructor args per type
+    // Constructor args
     let constructorArgs = [];
     if (type === "ERC20") constructorArgs = [initialSupply];
     if (type === "ERC1155") constructorArgs = [baseURI];
 
-    // Deploy
-    const contractAddress = await deployContract(contractFile, constructorArgs);
+    // Deploy (spawned Hardhat, public network)
+    const network = "sepolia";
+    const deployResult = await runHardhatDeploy({
+      contractFile,
+      contractName: cleanContractName,
+      constructorArgs,
+      network,
+    });
 
-    // Save config JSON
-    const config = {
+    const contractAddress = deployResult?.address;
+    const txHash = deployResult?.txHash;
+    const deployerAddress = deployResult?.deployerAddress;
+    const verified = deployResult?.verified ?? false;
+
+    if (!contractAddress) {
+      console.error("[create-token] Deploy returned no contract address", {
+        requestId,
+        deployResult,
+      });
+      return serverError(res, "Deployment failed (no contract address returned).");
+    }
+
+    // Persist deployment metadata (audit trail)
+    const deploymentRecord = {
+      project: "ChainForge",
       tokenType: type,
-      token: { tokenName, tokenSymbol, initialSupply, decimals, baseURI, modules },
+      token: {
+        tokenName,
+        tokenSymbol,
+        initialSupply,
+        decimals,
+        baseURI,
+        modules,
+      },
+      network,
       contractAddress,
-      generatedAt: new Date().toISOString(),
+      deployerAddress: deployerAddress || null,
+      txHash: txHash || null,
+      verified,
+      deployedAt: new Date().toISOString(),
     };
 
-    const configFilename = `${tokenName.replace(/\s+/g, "_")}_config.json`;
-    const configPath = path.join(__dirname, "generated_contracts", configFilename);
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-    console.log("💾 Config Saved:", configFilename);
+    const deploymentFilename = `${cleanContractName}_${type}_${Date.now()}.json`;
+    const deploymentPath = path.join(deploymentsDir, deploymentFilename);
 
-    // Zip generated_contracts
-    const contractsDir = path.join(__dirname, "generated_contracts");
-    const zipFilename = `${tokenName.replace(/\s+/g, "_")}_contracts.zip`;
-    const zipPath = path.join(contractsDir, zipFilename);
-    await zipFolder(contractsDir, zipPath);
+    fs.writeFileSync(deploymentPath, JSON.stringify(deploymentRecord, null, 2), "utf-8");
+    console.log("[create-token] Deployment record persisted", { requestId, file: deploymentFilename });
 
-    res.json({
-      message: `✅ ${type} Token "${tokenName}" deployed successfully!`,
+    // Save config file into generated_contracts (optional, used in zip bundle)
+    const configFilename = `${cleanContractName}_config.json`;
+    const configPath = path.join(generatedContractsDir, configFilename);
+    fs.writeFileSync(configPath, JSON.stringify(deploymentRecord, null, 2), "utf-8");
+
+    // Zip generated contracts folder for download
+    const zipFilename = `${cleanContractName}_contracts.zip`;
+    const zipPath = path.join(generatedContractsDir, zipFilename);
+    await zipFolder(generatedContractsDir, zipPath);
+
+    return res.json({
+      message: `${type} token deployed successfully`,
+      network,
       contractAddress,
+      deployerAddress: deployerAddress || null,
+      txHash: txHash || null,
+      verified,
+      deploymentFile: deploymentFilename,
       contracts: filenames,
-      configFile: configFilename,
       download: `/generated_contracts/${zipFilename}`,
     });
   } catch (err) {
-    console.error("❌ Error creating token:", err);
-    res.status(500).json({ message: "Internal Server Error", error: err.message });
+    console.error("[create-token] Failed", { error: err?.message, stack: err?.stack });
+    return serverError(res, "Token deployment failed.");
   }
 });
 
-// ---------------- Create Blockchain Endpoint ----------------
+// -----------------------------
+// Create Chain (scaffold + zip)
+// -----------------------------
 app.post("/create-chain", async (req, res) => {
   try {
-    console.log("Create chain request received:", req.body);
+    const { chainName, consensusType, modules } = req.body || {};
 
-    const { chainName, consensusType, modules } = req.body;
+    if (!chainName) return badRequest(res, "chainName is required.");
 
-    if (!chainName) return res.status(400).json({ message: "Chain Name is required." });
-
-    const chainsDir = path.join(__dirname, "generated_chains");
-    if (!fs.existsSync(chainsDir)) fs.mkdirSync(chainsDir);
-
-    const chainDir = path.join(chainsDir, chainName);
+    const chainDir = path.join(generatedChainsDir, chainName);
     if (fs.existsSync(chainDir)) {
-      return res.status(400).json({ message: "Chain already exists." });
+      return badRequest(res, "Chain already exists.");
     }
 
-    fs.mkdirSync(chainDir);
+    fs.mkdirSync(chainDir, { recursive: true });
 
-    const readmeContent = `
-# ${chainName}
-Consensus Type: ${consensusType || "Default"}
-Modules: ${modules ? modules.join(", ") : "None"}
-Generated At: ${new Date().toISOString()}
-    `;
-    fs.writeFileSync(path.join(chainDir, "README.md"), readmeContent);
+    const readmeContent = [
+      `# ${chainName}`,
+      "",
+      `Consensus: ${consensusType || "Default"}`,
+      `Modules: ${Array.isArray(modules) && modules.length ? modules.join(", ") : "None"}`,
+      `Generated At: ${new Date().toISOString()}`,
+      "",
+    ].join("\n");
 
-    console.log(`Chain scaffolded at ${chainDir}`);
+    fs.writeFileSync(path.join(chainDir, "README.md"), readmeContent, "utf-8");
 
     const zipFilename = `${chainName.replace(/\s+/g, "_")}_chain.zip`;
-    const zipPath = path.join(chainsDir, zipFilename);
+    const zipPath = path.join(generatedChainsDir, zipFilename);
+
     await zipFolder(chainDir, zipPath);
 
-    res.json({
-      message: `✅ Chain "${chainName}" scaffolded successfully!`,
-      path: chainDir,
+    return res.json({
+      message: `Chain scaffolded successfully`,
       download: `/generated_chains/${zipFilename}`,
     });
   } catch (err) {
-    console.error("❌ Error creating chain:", err);
-    res.status(500).json({ message: "Internal Server Error", error: err.message });
+    console.error("[create-chain] Failed", { error: err?.message, stack: err?.stack });
+    return serverError(res, "Chain scaffolding failed.");
   }
 });
 
-// ---------------- (Optional) Dynamic Deployment Endpoint ----------------
-// Uncomment only if deployDynamicToken exists and works
-/*
-app.post("/deploy-dynamic-token", async (req, res) => {
+// -----------------------------
+// Token actions
+// -----------------------------
+app.post("/mint", mintToken);
+app.post("/balance", checkBalance);
+
+// -----------------------------
+// Deployment history
+// -----------------------------
+app.get("/deployments", (req, res) => {
   try {
-    const { tokenName, tokenSymbol, initialSupply } = req.body;
+    const files = fs.readdirSync(deploymentsDir);
 
-    if (!tokenName || !tokenSymbol || !initialSupply) {
-      return res.status(400).json({ message: "Token name, symbol, and supply are required." });
-    }
+    const deployments = files
+      .filter((file) => file.endsWith(".json"))
+      .map((file) => {
+        const fullPath = path.join(deploymentsDir, file);
+        const raw = fs.readFileSync(fullPath, "utf-8");
+        const data = JSON.parse(raw);
 
-    console.log(`📦 Deploy request received for ${tokenName} (${tokenSymbol}) with supply ${initialSupply}`);
+        return {
+          file,
+          project: data.project,
+          tokenType: data.tokenType,
+          tokenName: data.token?.tokenName || "Unknown",
+          network: data.network,
+          contractAddress: data.contractAddress,
+          deployerAddress: data.deployerAddress || null,
+          txHash: data.txHash || null,
+          deployedAt: data.deployedAt,
+          verified: data.verified ?? false,
+        };
+      })
+      // newest first
+      .sort((a, b) => new Date(b.deployedAt).getTime() - new Date(a.deployedAt).getTime());
 
-    const address = await deployDynamicToken(tokenName, tokenSymbol, initialSupply);
-
-    res.json({
-      success: true,
-      message: `✅ ${tokenName} deployed successfully!`,
-      contractAddress: address,
-    });
-  } catch (error) {
-    console.error("❌ Deployment error:", error);
-    res.status(500).json({ success: false, error: error.message });
+    return res.json({ count: deployments.length, deployments });
+  } catch (err) {
+    console.error("[deployments] Failed", { error: err?.message, stack: err?.stack });
+    return serverError(res, "Failed to fetch deployments.");
   }
 });
-*/
 
-// ---------------- Start Server ----------------
 app.listen(PORT, () => {
-  console.log(`🚀 Backend is running at: http://localhost:${PORT}`);
+  console.log(`[server] Listening on port ${PORT}`);
 });

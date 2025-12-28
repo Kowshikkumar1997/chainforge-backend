@@ -1,70 +1,95 @@
-// utils/deployContract.js
+/**
+ * Hardhat Deployment Script
+ *
+ * This script is executed by Hardhat via:
+ *   npx hardhat run scripts/deploy.js --network <network>
+ *
+ * Responsibilities:
+ * - Load a generated Solidity contract into the Hardhat context
+ * - Deploy the contract to the specified network
+ * - Emit a machine-readable deployment result for backend consumption
+ *
+ * Note:
+ * This script intentionally runs inside the Hardhat runtime environment.
+ */
 
 const hre = require("hardhat");
 const path = require("path");
 const fs = require("fs");
 
-// ---------------- Deploy Helper ----------------
 async function deployContract(contractFilename, contractName, constructorArgs = []) {
-  try {
-    console.log(`\n🚀 Deploying contract ${contractName}`);
-    console.log(`📄 File: ${contractFilename}`);
-    console.log("⚙️ Constructor Args:", constructorArgs);
+  console.log("[deploy-script] Starting deployment");
+  console.log("[deploy-script] Contract:", contractName);
+  console.log("[deploy-script] File:", contractFilename);
+  console.log("[deploy-script] Network:", hre.network.name);
 
-    // Paths
-    const generatedPath = path.join(__dirname, "generated_contracts", contractFilename);
-    const hardhatContractsDir = path.join(__dirname, "contracts");
+  const projectRoot = path.join(__dirname, "..");
+  const generatedPath = path.join(projectRoot, "generated_contracts", contractFilename);
+  const contractsDir = path.join(projectRoot, "contracts");
 
-    // Ensure contracts folder exists
-    if (!fs.existsSync(hardhatContractsDir)) fs.mkdirSync(hardhatContractsDir);
-
-    // ============================================================
-    // 🧹 CLEANUP OLD CONTRACTS WITH SAME NAME
-    // ============================================================
-    const files = fs.readdirSync(hardhatContractsDir);
-    files.forEach((file) => {
-      if (file.startsWith(contractName)) {
-        fs.unlinkSync(path.join(hardhatContractsDir, file));
-        console.log("🗑️ Deleted old contract:", file);
-      }
-    });
-    // ============================================================
-
-    // Copy new file into /contracts
-    const destinationPath = path.join(hardhatContractsDir, contractFilename);
-    fs.copyFileSync(generatedPath, destinationPath);
-    console.log("📁 Copied contract into /contracts");
-
-    // Clean + compile
-    await hre.run("clean");
-    console.log("🧹 Hardhat cleaned");
-
-    await hre.run("compile");
-    console.log("🔨 Hardhat compiled contracts");
-
-    // Deploy
-    const [deployer] = await hre.ethers.getSigners();
-    console.log("👤 Deployer Address:", deployer.address);
-
-    // Fully qualified name (prevents HH701)
-    const fqName = `contracts/${contractFilename}:${contractName}`;
-
-    const ContractFactory = await hre.ethers.getContractFactory(fqName);
-    const contract = await ContractFactory.deploy(...constructorArgs);
-
-    console.log("⏳ Waiting for deployment...");
-    await contract.waitForDeployment();
-
-    const deployedAddress = await contract.getAddress();
-    console.log(`🎉 SUCCESS — Deployed at: ${deployedAddress}`);
-
-    return deployedAddress;
-
-  } catch (error) {
-    console.error("❌ DEPLOY ERROR:", error);
-    throw error;
+  if (!fs.existsSync(generatedPath)) {
+    throw new Error(`Generated contract not found: ${generatedPath}`);
   }
+
+  if (!fs.existsSync(contractsDir)) {
+    fs.mkdirSync(contractsDir, { recursive: true });
+  }
+
+  fs.copyFileSync(generatedPath, path.join(contractsDir, contractFilename));
+
+  await hre.run("clean");
+  await hre.run("compile");
+
+  const [deployer] = await hre.ethers.getSigners();
+  console.log("[deploy-script] Deployer address:", deployer.address);
+
+  const fqName = `contracts/${contractFilename}:${contractName}`;
+  const Factory = await hre.ethers.getContractFactory(fqName);
+
+  const contract = await Factory.deploy(...constructorArgs);
+  await contract.waitForDeployment();
+
+  const address = await contract.getAddress();
+  const tx = contract.deploymentTransaction();
+
+  console.log("[deploy-script] Contract deployed at:", address);
+
+  const result = {
+    address,
+    txHash: tx?.hash || null,
+    deployerAddress: deployer.address,
+    network: hre.network.name,
+    contractName,
+    contractFile: contractFilename,
+    deployedAt: new Date().toISOString(),
+  };
+
+  /**
+   * MVP NOTE:
+   * This file is consumed by the backend after process completion.
+   * In future versions, this can be replaced with a stream or IPC channel.
+   */
+  const outputPath = path.join(process.cwd(), "deploy-result.json");
+  fs.writeFileSync(outputPath, JSON.stringify(result, null, 2));
+
+  console.log("[deploy-script] Deployment result written to deploy-result.json");
 }
 
+async function main() {
+  const file = process.env.CONTRACT_FILE;
+  const name = process.env.CONTRACT_NAME;
+  const args = process.env.CONSTRUCTOR_ARGS
+    ? JSON.parse(process.env.CONSTRUCTOR_ARGS)
+    : [];
 
-module.exports = deployContract;
+  if (!file || !name) {
+    throw new Error("Missing required env vars: CONTRACT_FILE, CONTRACT_NAME");
+  }
+
+  await deployContract(file, name, args);
+}
+
+main().catch((err) => {
+  console.error("[deploy-script] Failed:", err.message);
+  process.exit(1);
+});

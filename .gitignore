@@ -36,3 +36,7 @@ out/
 
 # ---- Zipped downloads ----
 *.zip
+
+# ---- Local evidence / deployment records ----
+deployments/
+deployments_archive/

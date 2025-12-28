@@ -1,24 +1,38 @@
 {
   "name": "chainforge-backend",
   "version": "1.0.0",
+  "description": "Backend service for ChainForge — a low-code blockchain infrastructure platform that programmatically generates, deploys, and manages ERC20, ERC721, and ERC1155 smart contracts on public networks.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "node index.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "blockchain",
+    "ethereum",
+    "smart-contracts",
+    "hardhat",
+    "erc20",
+    "erc721",
+    "erc1155",
+    "web3",
+    "infrastructure",
+    "low-code"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
     "hardhat": "^2.26.3"
   },
-  "description": "",
   "dependencies": {
     "@openzeppelin/contracts": "^5.4.0",
     "archiver": "^7.0.1",
-    "body-parser": "^2.2.0",
     "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
     "ethers": "^6.15.0",
     "express": "^5.1.0"
   }
