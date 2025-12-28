@@ -26,6 +26,15 @@ async function main() {
   console.log("[deploy-script] Starting deployment");
   console.log("[deploy-script] Contract:", CONTRACT_NAME);
   console.log("[deploy-script] Network:", hre.network.name);
+    const sourcesDir = hre.config.paths.sources;
+  console.log("[deploy-script] Sources dir:", sourcesDir);
+
+  try {
+    const files = fs.existsSync(sourcesDir) ? fs.readdirSync(sourcesDir) : [];
+    console.log("[deploy-script] Sources files:", files);
+  } catch (e) {
+    console.log("[deploy-script] Sources scan failed:", e?.message);
+  }
 
   // Compile contracts from runtime-generated sources
   await hre.run("compile");
