@@ -63,12 +63,12 @@ async function runHardhatDeploy({
   ------------------------------------------------------------------- */
 
   const env = {
-    ...process.env,
-    CONTRACT_FILE: contractFile,
-    CONTRACT_NAME: contractName,
-    CONSTRUCTOR_ARGS: JSON.stringify(constructorArgs),
-    DEPLOY_RESULT_PATH: resultPath,
-  };
+  ...process.env, 
+  CONTRACT_FILE: contractFile,
+  CONTRACT_NAME: contractName,
+  CONSTRUCTOR_ARGS: JSON.stringify(constructorArgs),
+  RUNTIME_BASE_DIR: process.env.RUNTIME_BASE_DIR || "/tmp/chainforge",
+};
 
   /* ------------------------------------------------------------------
      Deployment Execution
