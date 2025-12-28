@@ -88,11 +88,12 @@ async function runHardhatDeploy({
         maxBuffer: 10 * 1024 * 1024,
       }
     );
-  } catch (err) {
-    const details =
-      err?.stdout?.toString() ||
-      err?.stderr?.toString() ||
-      err?.message;
+    } catch (err) {
+    const stdout = err?.stdout ? err.stdout.toString() : "";
+    const stderr = err?.stderr ? err.stderr.toString() : "";
+    const message = err?.message ? String(err.message) : "";
+
+    const details = [message, stdout, stderr].filter(Boolean).join("\n");
 
     throw new Error(`Hardhat deployment failed:\n${details}`);
   }
