@@ -17,19 +17,37 @@
 const fs = require("fs");
 const path = require("path");
 
-const OUTPUT_DIR = path.join(__dirname, "..", "generated_contracts");
+/* ------------------------------------------------------------------
+   Runtime-safe output directory
+------------------------------------------------------------------- */
+
+/**
+ * Render (and similar platforms) provide a writable ephemeral filesystem
+ * under /tmp. This base directory is configurable for local development
+ * but defaults to a safe production location.
+ */
+const RUNTIME_BASE_DIR = process.env.RUNTIME_BASE_DIR || "/tmp/chainforge";
+const GENERATED_CONTRACTS_DIR = path.join(
+  RUNTIME_BASE_DIR,
+  "generated_contracts"
+);
+
+// Ensure output directory exists
+if (!fs.existsSync(GENERATED_CONTRACTS_DIR)) {
+  fs.mkdirSync(GENERATED_CONTRACTS_DIR, { recursive: true });
+}
 
 /* ------------------------------------------------------------------
    Shared helpers
 ------------------------------------------------------------------- */
 
 function sanitizeName(name) {
-  return name.replace(/\s+/g, "");
+  return String(name || "").replace(/\s+/g, "").trim();
 }
 
 function writeContract(filename, source) {
-  const outputPath = path.join(OUTPUT_DIR, filename);
-  fs.writeFileSync(outputPath, source);
+  const outputPath = path.join(GENERATED_CONTRACTS_DIR, filename);
+  fs.writeFileSync(outputPath, source, "utf-8");
   return outputPath;
 }
 
@@ -62,8 +80,11 @@ function generateERC20Contract({
   ];
 
   if (features.burnable) {
-    imports.push(`import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";`);
+    imports.push(
+      `import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";`
+    );
   }
+
   if (features.pausable) {
     imports.push(`import "@openzeppelin/contracts/utils/Pausable.sol";`);
   }
@@ -77,8 +98,10 @@ function generateERC20Contract({
 
   const roles = [
     `bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");`,
-    features.pausable && `bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");`,
-    features.governance && `bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");`,
+    features.pausable &&
+      `bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");`,
+    features.governance &&
+      `bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");`,
   ].filter(Boolean);
 
   const resolvedDecimals =
@@ -106,7 +129,10 @@ function generateERC20Contract({
 
   if (features.mintable) {
     functions.push(`
-    function mint(address to, uint256 amount) public onlyRole(MINTER_ROLE) {
+    function mint(address to, uint256 amount)
+        public
+        onlyRole(MINTER_ROLE)
+    {
         _mint(to, amount);
     }
     `);
@@ -121,7 +147,8 @@ function generateERC20Contract({
 
   if (features.pausable || features.tokenTransfer) {
     const checks = [];
-    if (features.pausable) checks.push(`require(!paused(), "Token is paused");`);
+    if (features.pausable)
+      checks.push(`require(!paused(), "Token is paused");`);
     checks.push(`super._update(from, to, value);`);
 
     functions.push(`
@@ -165,7 +192,10 @@ function generateERC20Contract({
         emit Voted(id, msg.sender, weight);
     }
 
-    function executeProposal(uint256 id) public onlyRole(GOVERNANCE_ROLE) {
+    function executeProposal(uint256 id)
+        public
+        onlyRole(GOVERNANCE_ROLE)
+    {
         Proposal storage p = proposals[id];
         require(!p.executed, "Executed");
         require(p.voteCount > 0, "No votes");
@@ -185,7 +215,9 @@ contract ${contractName} is ${inheritance.join(", ")} {
 
     uint8 private _customDecimals;
 
-    constructor(uint256 initialSupply) ERC20("${tokenName}", "${tokenSymbol}") {
+    constructor(uint256 initialSupply)
+        ERC20("${tokenName}", "${tokenSymbol}")
+    {
         ${constructorBody.join("\n        ")}
     }
 
@@ -221,7 +253,11 @@ contract ${contractName} is ERC721, AccessControl {
         _grantRole(MINTER_ROLE, msg.sender);
     }
 
-    function safeMint(address to) public onlyRole(MINTER_ROLE) returns (uint256) {
+    function safeMint(address to)
+        public
+        onlyRole(MINTER_ROLE)
+        returns (uint256)
+    {
         uint256 tokenId = _nextTokenId++;
         _safeMint(to, tokenId);
         return tokenId;
