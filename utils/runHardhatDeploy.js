@@ -8,12 +8,9 @@
  * - Perform optional Etherscan verification
  *
  * Architectural Notes:
- * - Hardhat is intentionally executed out-of-process to avoid
- *   provider/signer contamination inside the API runtime.
- * - execSync is used deliberately to ensure deterministic execution,
- *   strict failure propagation, and audit-friendly behavior.
- * - The locally installed Hardhat binary is used (not npx) to ensure
- *   compatibility with restricted production runtimes (e.g. Render).
+ * - Hardhat is executed out-of-process to avoid runtime contamination
+ * - A single runtime directory is used as the source of truth
+ * - execSync is intentional for deterministic, auditable execution
  */
 
 const { execSync } = require("child_process");
@@ -31,24 +28,20 @@ async function runHardhatDeploy({
   }
 
   /* ------------------------------------------------------------------
-     Runtime & Path Resolution
+     Runtime & Path Resolution (SINGLE SOURCE OF TRUTH)
   ------------------------------------------------------------------- */
 
-  /**
-   * Render (and similar platforms) provide a writable ephemeral filesystem
-   * under /tmp. This directory is configurable for local development but
-   * defaults to a safe production location.
-   */
-  const RUNTIME_BASE_DIR = process.env.RUNTIME_BASE_DIR || "/tmp/chainforge";
   const projectRoot = path.join(__dirname, "..");
 
-  // Path where the deployment script writes machine-readable output
-  const resultPath = path.join(
-  process.env.RUNTIME_BASE_DIR || path.join(projectRoot, ".runtime"),
-  "deploy-result.json"
-);
+  const runtimeBaseDir =
+    process.env.RUNTIME_BASE_DIR ||
+    path.join(projectRoot, ".runtime");
 
-  // Resolve the locally installed Hardhat binary
+  const deployResultPath = path.join(
+    runtimeBaseDir,
+    "deploy-result.json"
+  );
+
   const hardhatBin = path.join(
     projectRoot,
     "node_modules",
@@ -56,9 +49,8 @@ async function runHardhatDeploy({
     "hardhat"
   );
 
-  // Ensure runtime directory exists
-  if (!fs.existsSync(RUNTIME_BASE_DIR)) {
-    fs.mkdirSync(RUNTIME_BASE_DIR, { recursive: true });
+  if (!fs.existsSync(runtimeBaseDir)) {
+    fs.mkdirSync(runtimeBaseDir, { recursive: true });
   }
 
   /* ------------------------------------------------------------------
@@ -66,15 +58,16 @@ async function runHardhatDeploy({
   ------------------------------------------------------------------- */
 
   const env = {
-  ...process.env, 
-  CONTRACT_FILE: contractFile,
-  CONTRACT_NAME: contractName,
-  CONSTRUCTOR_ARGS: JSON.stringify(constructorArgs),
-  RUNTIME_BASE_DIR: process.env.RUNTIME_BASE_DIR || "/tmp/chainforge",
-};
+    ...process.env,
+    CONTRACT_FILE: contractFile,
+    CONTRACT_NAME: contractName,
+    CONSTRUCTOR_ARGS: JSON.stringify(constructorArgs),
+    RUNTIME_BASE_DIR: runtimeBaseDir,
+    DEPLOY_RESULT_PATH: deployResultPath,
+  };
 
   /* ------------------------------------------------------------------
-     Deployment Execution
+     Hardhat Execution
   ------------------------------------------------------------------- */
 
   let output;
@@ -87,36 +80,37 @@ async function runHardhatDeploy({
         env,
         encoding: "utf-8",
         stdio: "pipe",
-        timeout: 5 * 60 * 1000, // 5 minutes
+        timeout: 5 * 60 * 1000,
         maxBuffer: 10 * 1024 * 1024,
       }
     );
-    } catch (err) {
-    const stdout = err?.stdout ? err.stdout.toString() : "";
-    const stderr = err?.stderr ? err.stderr.toString() : "";
-    const message = err?.message ? String(err.message) : "";
+  } catch (err) {
+    const stdout = err?.stdout?.toString() || "";
+    const stderr = err?.stderr?.toString() || "";
+    const message = err?.message || "";
 
-    const details = [message, stdout, stderr].filter(Boolean).join("\n");
-
-    throw new Error(`Hardhat deployment failed:\n${details}`);
+    throw new Error(
+      `Hardhat deployment failed:\n${[message, stdout, stderr]
+        .filter(Boolean)
+        .join("\n")}`
+    );
   }
 
   /* ------------------------------------------------------------------
      Deployment Result Consumption
   ------------------------------------------------------------------- */
 
-  if (!fs.existsSync(resultPath)) {
+  if (!fs.existsSync(deployResultPath)) {
     throw new Error(
       `Deployment output file not found.\nHardhat output:\n${output}`
     );
   }
 
   const deployResult = JSON.parse(
-    fs.readFileSync(resultPath, "utf-8")
+    fs.readFileSync(deployResultPath, "utf-8")
   );
 
-  // Clean up ephemeral artifact
-  fs.unlinkSync(resultPath);
+  fs.unlinkSync(deployResultPath);
 
   /* ------------------------------------------------------------------
      Optional Etherscan Verification
@@ -129,14 +123,12 @@ async function runHardhatDeploy({
       typeof arg === "string" ? `"${arg}"` : String(arg)
     );
 
-    const verifyCommand =
+    const verifyCmd =
       args.length > 0
-        ? `${hardhatBin} verify --network ${network} ${deployResult.address} ${args.join(
-            " "
-          )}`
+        ? `${hardhatBin} verify --network ${network} ${deployResult.address} ${args.join(" ")}`
         : `${hardhatBin} verify --network ${network} ${deployResult.address}`;
 
-    execSync(verifyCommand, {
+    execSync(verifyCmd, {
       cwd: projectRoot,
       env: process.env,
       encoding: "utf-8",
@@ -145,18 +137,12 @@ async function runHardhatDeploy({
     });
 
     verified = true;
-  } catch (_) {
-    /**
-     * Verification failure should not invalidate a successful deployment.
-     * Common causes include:
-     * - Indexing delay on Etherscan
-     * - Transient API issues
-     */
+  } catch {
     verified = false;
   }
 
   /* ------------------------------------------------------------------
-     Return Normalized Result
+     Normalized Return
   ------------------------------------------------------------------- */
 
   return {
