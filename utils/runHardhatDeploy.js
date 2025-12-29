@@ -43,7 +43,10 @@ async function runHardhatDeploy({
   const projectRoot = path.join(__dirname, "..");
 
   // Path where the deployment script writes machine-readable output
-  const resultPath = path.join(RUNTIME_BASE_DIR, "deploy-result.json");
+  const resultPath = path.join(
+  process.env.RUNTIME_BASE_DIR || path.join(projectRoot, ".runtime"),
+  "deploy-result.json"
+);
 
   // Resolve the locally installed Hardhat binary
   const hardhatBin = path.join(
