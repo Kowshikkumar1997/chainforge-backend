@@ -68,11 +68,11 @@ app.use(express.json());
 // -----------------------------
 // Render containers provide a writable /tmp directory. This keeps runtime artifacts stable.
 // Public URL routes remain the same; only the storage location is production-safe.
-const RUNTIME_BASE_DIR = process.env.RUNTIME_BASE_DIR || "/tmp/chainforge";
-
-const deploymentsDir = path.join(RUNTIME_BASE_DIR, "deployments");
-const generatedContractsDir = path.join(RUNTIME_BASE_DIR, "generated_contracts");
-const generatedChainsDir = path.join(RUNTIME_BASE_DIR, "generated_chains");
+const {
+  deploymentsDir,
+  generatedContractsDir,
+  generatedChainsDir,
+} = require("./utils/runtime");
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });

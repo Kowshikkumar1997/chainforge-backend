@@ -33,14 +33,12 @@ async function runHardhatDeploy({
 
   const projectRoot = path.join(__dirname, "..");
 
-  const runtimeBaseDir =
-    process.env.RUNTIME_BASE_DIR ||
-    path.join(projectRoot, ".runtime");
+  const { RUNTIME_BASE_DIR } = require("./runtime");
 
-  const deployResultPath = path.join(
-    runtimeBaseDir,
-    "deploy-result.json"
-  );
+const deployResultPath = path.join(
+  RUNTIME_BASE_DIR,
+  "deploy-result.json"
+);
 
   const hardhatBin = path.join(
     projectRoot,
