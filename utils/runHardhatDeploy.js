@@ -17,6 +17,8 @@ const { execSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
+const { RUNTIME_BASE_DIR } = require("./runtime");
+
 async function runHardhatDeploy({
   contractFile,
   contractName,
@@ -33,12 +35,15 @@ async function runHardhatDeploy({
 
   const projectRoot = path.join(__dirname, "..");
 
-  const { RUNTIME_BASE_DIR } = require("./runtime");
+  // Ensure runtime base directory exists
+  if (!fs.existsSync(RUNTIME_BASE_DIR)) {
+    fs.mkdirSync(RUNTIME_BASE_DIR, { recursive: true });
+  }
 
-const deployResultPath = path.join(
-  RUNTIME_BASE_DIR,
-  "deploy-result.json"
-);
+  const deployResultPath = path.join(
+    RUNTIME_BASE_DIR,
+    "deploy-result.json"
+  );
 
   const hardhatBin = path.join(
     projectRoot,
@@ -46,10 +51,6 @@ const deployResultPath = path.join(
     ".bin",
     "hardhat"
   );
-
-  if (!fs.existsSync(runtimeBaseDir)) {
-    fs.mkdirSync(runtimeBaseDir, { recursive: true });
-  }
 
   /* ------------------------------------------------------------------
      Environment Injection
@@ -60,7 +61,7 @@ const deployResultPath = path.join(
     CONTRACT_FILE: contractFile,
     CONTRACT_NAME: contractName,
     CONSTRUCTOR_ARGS: JSON.stringify(constructorArgs),
-    RUNTIME_BASE_DIR: runtimeBaseDir,
+    RUNTIME_BASE_DIR,
     DEPLOY_RESULT_PATH: deployResultPath,
   };
 
