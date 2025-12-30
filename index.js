@@ -47,20 +47,40 @@ const allowedOrigins = (process.env.FRONTEND_ORIGIN || "")
 app.use(
   cors({
     origin(origin, callback) {
-      // Allow non-browser requests (curl, server-to-server, health checks)
+      // Allow non-browser requests (curl, Postman, health checks)
       if (!origin) return callback(null, true);
 
-      // If no FRONTEND_ORIGIN is configured, fail closed in production
-      if (process.env.NODE_ENV === "production" && allowedOrigins.length === 0) {
-        return callback(new Error("CORS is not configured (FRONTEND_ORIGIN missing)."));
+      const isLocalhost =
+        origin === "http://localhost:3000";
+
+      const isAllowedExplicit =
+        allowedOrigins.includes(origin);
+
+      const isVercelPreview =
+        origin.endsWith(".vercel.app");
+
+      // Allow localhost in non-production
+      if (process.env.NODE_ENV !== "production" && isLocalhost) {
+        return callback(null, true);
       }
 
-      if (allowedOrigins.includes(origin)) return callback(null, true);
-      return callback(new Error(`CORS blocked for origin: ${origin}`));
+      // Allow configured production frontend
+      if (isAllowedExplicit) {
+        return callback(null, true);
+      }
+
+      // Allow Vercel preview deployments
+      if (isVercelPreview) {
+        return callback(null, true);
+      }
+
+      return callback(
+        new Error(`CORS blocked for origin: ${origin}`)
+      );
     },
+    credentials: true,
   })
 );
-
 app.use(express.json());
 
 // -----------------------------
