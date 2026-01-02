@@ -28,6 +28,9 @@ Thumbs.db
 # ---- Generated Outputs ----
 generated_contracts/
 generated_chains/
+contracts_runtime/
+contracts/
+
 
 # ---- Build outputs ----
 dist/
