@@ -14,10 +14,11 @@ module.exports = {
   solidity: "0.8.20",
 
   paths: {
-    sources: path.join(RUNTIME_BASE_DIR, "generated_contracts"),
-    artifacts: path.join(RUNTIME_BASE_DIR, "artifacts"),
-    cache: path.join(RUNTIME_BASE_DIR, "cache"),
-  },
+  sources: path.join(__dirname, "contracts_runtime"),
+  artifacts: path.join(RUNTIME_BASE_DIR, "artifacts"),
+  cache: path.join(RUNTIME_BASE_DIR, "cache"),
+},
+
 
   networks: {
     sepolia: {

@@ -1,9 +1,19 @@
 /**
- * ChainForge Hardhat Deployment Script
+ * ChainForge — Hardhat Deployment Script
  *
- * This script is executed by the backend via a spawned Hardhat process.
- * It deploys a dynamically generated contract from the runtime directory
- * and emits a machine-readable deployment result.
+ * Responsibilities:
+ * - Compile runtime-generated Solidity sources
+ * - Deploy the specified contract to the active network
+ * - Emit a machine-readable deployment artifact for backend consumption
+ *
+ * Execution Model:
+ * - Invoked as an isolated Hardhat child process
+ * - All deployment context is injected via environment variables
+ *
+ * Design Principles:
+ * - Deterministic execution
+ * - Explicit failure modes
+ * - Auditable runtime artifacts
  */
 
 const hre = require("hardhat");
@@ -11,6 +21,10 @@ const fs = require("fs");
 const path = require("path");
 
 async function main() {
+  /* ------------------------------------------------------------------
+     Environment Validation
+  ------------------------------------------------------------------- */
+
   const {
     CONTRACT_NAME,
     CONSTRUCTOR_ARGS,
@@ -18,40 +32,73 @@ async function main() {
   } = process.env;
 
   if (!CONTRACT_NAME) {
-    throw new Error("Missing required env var: CONTRACT_NAME");
+    throw new Error("Missing required environment variable: CONTRACT_NAME");
   }
 
-  const args = CONSTRUCTOR_ARGS ? JSON.parse(CONSTRUCTOR_ARGS) : [];
+  if (!DEPLOY_RESULT_PATH) {
+    throw new Error("Missing required environment variable: DEPLOY_RESULT_PATH");
+  }
 
-  console.log("[deploy-script] Starting deployment");
-  console.log("[deploy-script] Contract:", CONTRACT_NAME);
-  console.log("[deploy-script] Network:", hre.network.name);
-    const sourcesDir = hre.config.paths.sources;
-  console.log("[deploy-script] Sources dir:", sourcesDir);
+  let constructorArgs = [];
+
+  if (CONSTRUCTOR_ARGS) {
+    try {
+      constructorArgs = JSON.parse(CONSTRUCTOR_ARGS);
+      if (!Array.isArray(constructorArgs)) {
+        throw new Error("CONSTRUCTOR_ARGS must be a JSON array");
+      }
+    } catch (err) {
+      throw new Error(
+        `Invalid CONSTRUCTOR_ARGS format: ${err.message}`
+      );
+    }
+  }
+
+  /* ------------------------------------------------------------------
+     Execution Context Logging
+  ------------------------------------------------------------------- */
+
+  console.log("[deploy] Starting deployment");
+  console.log("[deploy] Network:", hre.network.name);
+  console.log("[deploy] Contract:", CONTRACT_NAME);
+  console.log("[deploy] Constructor args:", constructorArgs);
+
+  const sourcesDir = hre.config.paths.sources;
+  console.log("[deploy] Sources directory:", sourcesDir);
 
   try {
-    const files = fs.existsSync(sourcesDir) ? fs.readdirSync(sourcesDir) : [];
-    console.log("[deploy-script] Sources files:", files);
-  } catch (e) {
-    console.log("[deploy-script] Sources scan failed:", e?.message);
+    const sourceFiles = fs.readdirSync(sourcesDir);
+    console.log("[deploy] Source files:", sourceFiles);
+  } catch (err) {
+    console.warn("[deploy] Unable to read sources directory:", err.message);
   }
 
-  // Compile contracts from runtime-generated sources
+  /* ------------------------------------------------------------------
+     Compilation
+  ------------------------------------------------------------------- */
+
   await hre.run("compile");
 
-  const [deployer] = await hre.ethers.getSigners();
-  console.log("[deploy-script] Deployer address:", deployer.address);
+  /* ------------------------------------------------------------------
+     Deployment
+  ------------------------------------------------------------------- */
 
-  // Load factory from compiled artifacts (Hardhat paths are already configured)
+  const [deployer] = await hre.ethers.getSigners();
+  console.log("[deploy] Deployer address:", deployer.address);
+
   const Factory = await hre.ethers.getContractFactory(CONTRACT_NAME);
 
-  const contract = await Factory.deploy(...args);
+  const contract = await Factory.deploy(...constructorArgs);
   await contract.waitForDeployment();
 
   const address = await contract.getAddress();
   const tx = contract.deploymentTransaction();
 
-  const result = {
+  /* ------------------------------------------------------------------
+     Deployment Artifact Emission
+  ------------------------------------------------------------------- */
+
+  const deploymentResult = {
     address,
     txHash: tx?.hash || null,
     deployerAddress: deployer.address,
@@ -60,18 +107,28 @@ async function main() {
     deployedAt: new Date().toISOString(),
   };
 
-  const outputPath =
-    DEPLOY_RESULT_PATH ||
-    path.join(process.cwd(), "deploy-result.json");
+  const outputDir = path.dirname(DEPLOY_RESULT_PATH);
 
-  fs.writeFileSync(outputPath, JSON.stringify(result, null, 2), "utf-8");
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
 
-  console.log("[deploy-script] Contract deployed at:", address);
-  console.log("[deploy-script] Deployment result written");
+  fs.writeFileSync(
+    DEPLOY_RESULT_PATH,
+    JSON.stringify(deploymentResult, null, 2),
+    "utf-8"
+  );
+
+  console.log("[deploy] Contract deployed at:", address);
+  console.log("[deploy] Deployment artifact written to:", DEPLOY_RESULT_PATH);
 }
 
+/* ------------------------------------------------------------------
+   Entrypoint
+------------------------------------------------------------------- */
+
 main().catch((err) => {
-  console.error("[deploy-script] Deployment failed");
+  console.error("[deploy] Deployment failed");
   console.error(err);
   process.exit(1);
 });

@@ -13,11 +13,38 @@
  * - execSync is intentional for deterministic, auditable execution
  */
 
+console.log(
+  "[DEBUG] runHardhatDeploy loaded from:",
+  __filename
+);
+
 const { execSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
 const { RUNTIME_BASE_DIR } = require("./runtime");
+
+/* ------------------------------------------------------------------
+   Utility: Ensure directory exists
+------------------------------------------------------------------- */
+
+function ensureDir(dirPath) {
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
+  }
+}
+
+/* ------------------------------------------------------------------
+   Utility: Clean directory (prevents HH701 ambiguity)
+------------------------------------------------------------------- */
+
+function cleanDirectory(dirPath) {
+  if (!fs.existsSync(dirPath)) return;
+
+  for (const file of fs.readdirSync(dirPath)) {
+    fs.unlinkSync(path.join(dirPath, file));
+  }
+}
 
 async function runHardhatDeploy({
   contractFile,
@@ -35,10 +62,7 @@ async function runHardhatDeploy({
 
   const projectRoot = path.join(__dirname, "..");
 
-  // Ensure runtime base directory exists
-  if (!fs.existsSync(RUNTIME_BASE_DIR)) {
-    fs.mkdirSync(RUNTIME_BASE_DIR, { recursive: true });
-  }
+  ensureDir(RUNTIME_BASE_DIR);
 
   const deployResultPath = path.join(
     RUNTIME_BASE_DIR,
@@ -64,6 +88,34 @@ async function runHardhatDeploy({
     RUNTIME_BASE_DIR,
     DEPLOY_RESULT_PATH: deployResultPath,
   };
+
+  /* ------------------------------------------------------------------
+     Mirror runtime-generated contract into Hardhat project scope
+     (THIS IS WHERE OPTION 1 LIVES)
+  ------------------------------------------------------------------- */
+
+  const contractsRuntimeDir = path.join(
+    projectRoot,
+    "contracts_runtime"
+  );
+
+  ensureDir(contractsRuntimeDir);
+
+  // 🔴 CRITICAL: clean old contracts to avoid HH701
+  cleanDirectory(contractsRuntimeDir);
+
+  const sourceContractPath = path.join(
+    RUNTIME_BASE_DIR,
+    "generated_contracts",
+    contractFile
+  );
+
+  const targetContractPath = path.join(
+    contractsRuntimeDir,
+    contractFile
+  );
+
+  fs.copyFileSync(sourceContractPath, targetContractPath);
 
   /* ------------------------------------------------------------------
      Hardhat Execution
@@ -93,6 +145,11 @@ async function runHardhatDeploy({
         .filter(Boolean)
         .join("\n")}`
     );
+  } finally {
+    // Clean up mirrored contract after deploy
+    if (fs.existsSync(targetContractPath)) {
+      fs.unlinkSync(targetContractPath);
+    }
   }
 
   /* ------------------------------------------------------------------
