@@ -1,28 +1,34 @@
 /**
  * ChainForge — Hardhat Deployment Script
  *
- * Responsibilities:
- * - Compile runtime-generated Solidity sources
- * - Deploy the specified contract to the active network
- * - Emit a machine-readable deployment artifact for backend consumption
+ * Purpose:
+ * - Compile runtime-scoped Solidity sources
+ * - Deploy a single, explicitly specified contract
+ * - Emit a deterministic, machine-readable deployment artifact
  *
- * Execution Model:
- * - Invoked as an isolated Hardhat child process
- * - All deployment context is injected via environment variables
+ * Invocation Model:
+ * - Executed via `hardhat run` as an isolated child process
+ * - All execution context is injected via environment variables
  *
- * Design Principles:
- * - Deterministic execution
- * - Explicit failure modes
- * - Auditable runtime artifacts
+ * Architectural guarantees:
+ * - Exactly one contract is deployed per execution
+ * - No shared mutable state between deployments
+ * - No dependency on repository-local artifacts or paths
+ *
+ * This script is intentionally minimal, deterministic, and auditable.
  */
 
 const hre = require("hardhat");
 const fs = require("fs");
 const path = require("path");
 
+/* ------------------------------------------------------------------
+   Main Execution
+------------------------------------------------------------------- */
+
 async function main() {
   /* ------------------------------------------------------------------
-     Environment Validation
+     Environment Validation (Fail Fast)
   ------------------------------------------------------------------- */
 
   const {
@@ -31,52 +37,52 @@ async function main() {
     DEPLOY_RESULT_PATH,
   } = process.env;
 
-  if (!CONTRACT_NAME) {
-    throw new Error("Missing required environment variable: CONTRACT_NAME");
+  if (typeof CONTRACT_NAME !== "string" || CONTRACT_NAME.trim().length === 0) {
+    throw new Error("Missing or invalid environment variable: CONTRACT_NAME");
   }
 
-  if (!DEPLOY_RESULT_PATH) {
-    throw new Error("Missing required environment variable: DEPLOY_RESULT_PATH");
+  if (typeof DEPLOY_RESULT_PATH !== "string" || DEPLOY_RESULT_PATH.trim().length === 0) {
+    throw new Error("Missing or invalid environment variable: DEPLOY_RESULT_PATH");
   }
 
   let constructorArgs = [];
 
-  if (CONSTRUCTOR_ARGS) {
+  if (typeof CONSTRUCTOR_ARGS === "string" && CONSTRUCTOR_ARGS.trim().length > 0) {
+    let parsed;
     try {
-      constructorArgs = JSON.parse(CONSTRUCTOR_ARGS);
-      if (!Array.isArray(constructorArgs)) {
-        throw new Error("CONSTRUCTOR_ARGS must be a JSON array");
-      }
-    } catch (err) {
-      throw new Error(
-        `Invalid CONSTRUCTOR_ARGS format: ${err.message}`
-      );
+      parsed = JSON.parse(CONSTRUCTOR_ARGS);
+    } catch {
+      throw new Error("CONSTRUCTOR_ARGS must be valid JSON");
     }
+
+    if (!Array.isArray(parsed)) {
+      throw new Error("CONSTRUCTOR_ARGS must be a JSON array");
+    }
+
+    constructorArgs = parsed;
   }
 
   /* ------------------------------------------------------------------
      Execution Context Logging
   ------------------------------------------------------------------- */
 
-  console.log("[deploy] Starting deployment");
+  console.log("[deploy] Execution started");
   console.log("[deploy] Network:", hre.network.name);
-  console.log("[deploy] Contract:", CONTRACT_NAME);
-  console.log("[deploy] Constructor args:", constructorArgs);
-
-  const sourcesDir = hre.config.paths.sources;
-  console.log("[deploy] Sources directory:", sourcesDir);
-
-  try {
-    const sourceFiles = fs.readdirSync(sourcesDir);
-    console.log("[deploy] Source files:", sourceFiles);
-  } catch (err) {
-    console.warn("[deploy] Unable to read sources directory:", err.message);
-  }
+  console.log("[deploy] Contract name:", CONTRACT_NAME);
+  console.log("[deploy] Constructor arguments:", constructorArgs);
+  console.log("[deploy] Hardhat sources directory:", hre.config.paths.sources);
 
   /* ------------------------------------------------------------------
      Compilation
   ------------------------------------------------------------------- */
 
+  /**
+   * Compilation is explicitly invoked to guarantee:
+   * - Fresh artifacts
+   * - No reliance on stale cache
+   * - Deterministic behavior across ephemeral environments
+   */
+  console.log("[deploy] Compiling contracts (runtime scope)");
   await hre.run("compile");
 
   /* ------------------------------------------------------------------
@@ -84,15 +90,29 @@ async function main() {
   ------------------------------------------------------------------- */
 
   const [deployer] = await hre.ethers.getSigners();
+
+  if (!deployer) {
+    throw new Error("No deployer account available in Hardhat runtime");
+  }
+
   console.log("[deploy] Deployer address:", deployer.address);
 
-  const Factory = await hre.ethers.getContractFactory(CONTRACT_NAME);
+  const ContractFactory = await hre.ethers.getContractFactory(CONTRACT_NAME);
 
-  const contract = await Factory.deploy(...constructorArgs);
+  const contract = await ContractFactory.deploy(...constructorArgs);
+
+  /**
+   * Explicit wait ensures:
+   * - Deployment transaction is mined
+   * - Contract address is stable before emitting result
+   */
   await contract.waitForDeployment();
 
   const address = await contract.getAddress();
-  const tx = contract.deploymentTransaction();
+  const deploymentTx = contract.deploymentTransaction();
+
+  console.log("[deploy] Contract deployed at:", address);
+  console.log("[deploy] Deployment transaction hash:", deploymentTx?.hash || "N/A");
 
   /* ------------------------------------------------------------------
      Deployment Artifact Emission
@@ -100,7 +120,7 @@ async function main() {
 
   const deploymentResult = {
     address,
-    txHash: tx?.hash || null,
+    txHash: deploymentTx?.hash || null,
     deployerAddress: deployer.address,
     network: hre.network.name,
     contractName: CONTRACT_NAME,
@@ -108,10 +128,7 @@ async function main() {
   };
 
   const outputDir = path.dirname(DEPLOY_RESULT_PATH);
-
-  if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir, { recursive: true });
-  }
+  fs.mkdirSync(outputDir, { recursive: true });
 
   fs.writeFileSync(
     DEPLOY_RESULT_PATH,
@@ -119,8 +136,15 @@ async function main() {
     "utf-8"
   );
 
-  console.log("[deploy] Contract deployed at:", address);
-  console.log("[deploy] Deployment artifact written to:", DEPLOY_RESULT_PATH);
+  console.log("[deploy] Deployment artifact written:", DEPLOY_RESULT_PATH);
+  console.log("[deploy] Execution completed successfully");
+
+  /**
+   * CRITICAL:
+   * Explicit exit ensures the parent process (spawnSync)
+   * receives a clean termination signal.
+   */
+  process.exit(0);
 }
 
 /* ------------------------------------------------------------------
@@ -128,7 +152,7 @@ async function main() {
 ------------------------------------------------------------------- */
 
 main().catch((err) => {
-  console.error("[deploy] Deployment failed");
+  console.error("[deploy] Execution failed");
   console.error(err);
   process.exit(1);
 });

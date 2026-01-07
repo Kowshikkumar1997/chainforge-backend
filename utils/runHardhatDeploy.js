@@ -1,31 +1,35 @@
 /**
  * ChainForge — Hardhat Deployment Orchestrator
- *
+ * 
+ * BUILD-ONLY UTILITY
+ * 
+ * This module must never be imported by runtime code.
+ * Used exclusively for local compilation / tooling.
  * Responsibilities:
- * - Execute Hardhat as an isolated child process for contract deployment
- * - Inject deployment context via environment variables
- * - Consume machine-readable deployment artifacts
- * - Perform optional Etherscan verification
+ * - Execute Hardhat from a locally-installed environment
+ * - Compile runtime-generated Solidity contracts
+ * - Deploy a single contract per invocation
+ * - Emit a deterministic deployment artifact
  *
- * Architectural Notes:
- * - Hardhat is executed out-of-process to avoid runtime contamination
- * - A single runtime directory is used as the source of truth
- * - execSync is intentional for deterministic, auditable execution
+ * Architectural guarantees:
+ * - Hardhat never compiles repository Solidity directly
+ * - All Solidity sources live under RUNTIME_BASE_DIR
+ * - Runtime artifacts never pollute the repository
+ *
+ * This module is intentionally minimal, explicit, and auditable.
  */
 
-console.log(
-  "[DEBUG] runHardhatDeploy loaded from:",
-  __filename
-);
+console.log("[BOOT] runHardhatDeploy loaded:", __filename);
 
-const { execSync } = require("child_process");
-const path = require("path");
 const fs = require("fs");
-
+const path = require("path");
+const { spawnSync } = require("child_process");
 const { RUNTIME_BASE_DIR } = require("./runtime");
 
+console.log("[runtime] RUNTIME_BASE_DIR =", RUNTIME_BASE_DIR);
+
 /* ------------------------------------------------------------------
-   Utility: Ensure directory exists
+   Helpers
 ------------------------------------------------------------------- */
 
 function ensureDir(dirPath) {
@@ -35,16 +39,8 @@ function ensureDir(dirPath) {
 }
 
 /* ------------------------------------------------------------------
-   Utility: Clean directory (prevents HH701 ambiguity)
+   Main
 ------------------------------------------------------------------- */
-
-function cleanDirectory(dirPath) {
-  if (!fs.existsSync(dirPath)) return;
-
-  for (const file of fs.readdirSync(dirPath)) {
-    fs.unlinkSync(path.join(dirPath, file));
-  }
-}
 
 async function runHardhatDeploy({
   contractFile,
@@ -52,33 +48,68 @@ async function runHardhatDeploy({
   constructorArgs = [],
   network = "sepolia",
 }) {
+  console.log("[deploy] runHardhatDeploy invoked", {
+    contractFile,
+    contractName,
+    network,
+    constructorArgs,
+  });
+
   if (!contractFile || !contractName) {
-    throw new Error("Missing required deployment parameters.");
+    throw new Error(
+      "Invalid deployment request: contractFile and contractName are required."
+    );
   }
 
   /* ------------------------------------------------------------------
-     Runtime & Path Resolution (SINGLE SOURCE OF TRUTH)
+     Runtime invariants
   ------------------------------------------------------------------- */
 
-  const projectRoot = path.join(__dirname, "..");
-
   ensureDir(RUNTIME_BASE_DIR);
+
+  const generatedContractPath = path.join(
+    RUNTIME_BASE_DIR,
+    "generated_contracts",
+    contractFile
+  );
+
+  if (!fs.existsSync(generatedContractPath)) {
+    throw new Error(
+      `Generated contract not found at runtime path: ${generatedContractPath}`
+    );
+  }
 
   const deployResultPath = path.join(
     RUNTIME_BASE_DIR,
     "deploy-result.json"
   );
 
-  const hardhatBin = path.join(
-    projectRoot,
-    "node_modules",
-    ".bin",
-    "hardhat"
-  );
+  /* ------------------------------------------------------------------
+     Hardhat binary resolution (repository-owned)
+  ------------------------------------------------------------------- */
+
+  const repoRoot = path.join(__dirname, "..");
+  const hardhatConfigPath = path.join(repoRoot, "hardhat.config.js");
+
+  const hardhatBin =
+    process.platform === "win32"
+      ? path.join(repoRoot, "node_modules", ".bin", "hardhat.cmd")
+      : path.join(repoRoot, "node_modules", ".bin", "hardhat");
+
+  if (!fs.existsSync(hardhatBin)) {
+    throw new Error(`Hardhat binary not found at: ${hardhatBin}`);
+  }
+
+  console.log("[deploy] hardhat binary:", hardhatBin);
+  console.log("[deploy] hardhat execution cwd:", repoRoot);
 
   /* ------------------------------------------------------------------
-     Environment Injection
+     Prepare execution environment
   ------------------------------------------------------------------- */
+
+  if (fs.existsSync(deployResultPath)) {
+    fs.unlinkSync(deployResultPath);
+  }
 
   const env = {
     ...process.env,
@@ -87,78 +118,54 @@ async function runHardhatDeploy({
     CONSTRUCTOR_ARGS: JSON.stringify(constructorArgs),
     RUNTIME_BASE_DIR,
     DEPLOY_RESULT_PATH: deployResultPath,
+    HARDHAT_SHOW_STACK_TRACES: "true",
   };
 
-  /* ------------------------------------------------------------------
-     Mirror runtime-generated contract into Hardhat project scope
-     (THIS IS WHERE OPTION 1 LIVES)
-  ------------------------------------------------------------------- */
+  const args = [
+    "run",
+    "scripts/deploy.js",
+    "--config",
+    hardhatConfigPath,
+    "--network",
+    network,
+    "--show-stack-traces",
+  ];
 
-  const contractsRuntimeDir = path.join(
-    projectRoot,
-    "contracts_runtime"
-  );
-
-  ensureDir(contractsRuntimeDir);
-
-  // 🔴 CRITICAL: clean old contracts to avoid HH701
-  cleanDirectory(contractsRuntimeDir);
-
-  const sourceContractPath = path.join(
-    RUNTIME_BASE_DIR,
-    "generated_contracts",
-    contractFile
-  );
-
-  const targetContractPath = path.join(
-    contractsRuntimeDir,
-    contractFile
-  );
-
-  fs.copyFileSync(sourceContractPath, targetContractPath);
+  console.log("[deploy] executing Hardhat:", {
+    command: hardhatBin,
+    args: args.join(" "),
+  });
 
   /* ------------------------------------------------------------------
-     Hardhat Execution
+     Hardhat execution
   ------------------------------------------------------------------- */
 
-  let output;
+  const result = spawnSync(hardhatBin, args, {
+    cwd: repoRoot,               // REQUIRED for HH12
+    env,
+    stdio: "inherit",
+    windowsHide: true,
+    shell: true,                 // REQUIRED for .cmd on Windows
+    timeout: 15 * 60 * 1000,
+  });
 
-  try {
-    output = execSync(
-      `${hardhatBin} run scripts/deploy.js --network ${network}`,
-      {
-        cwd: projectRoot,
-        env,
-        encoding: "utf-8",
-        stdio: "pipe",
-        timeout: 5 * 60 * 1000,
-        maxBuffer: 10 * 1024 * 1024,
-      }
-    );
-  } catch (err) {
-    const stdout = err?.stdout?.toString() || "";
-    const stderr = err?.stderr?.toString() || "";
-    const message = err?.message || "";
+  console.log("[deploy] hardhat exit status:", result.status);
 
-    throw new Error(
-      `Hardhat deployment failed:\n${[message, stdout, stderr]
-        .filter(Boolean)
-        .join("\n")}`
-    );
-  } finally {
-    // Clean up mirrored contract after deploy
-    if (fs.existsSync(targetContractPath)) {
-      fs.unlinkSync(targetContractPath);
-    }
+  if (result.error) {
+    throw new Error(`Hardhat execution error: ${result.error.message}`);
+  }
+
+  if (result.status !== 0) {
+    throw new Error(`Hardhat failed with exit code: ${result.status}`);
   }
 
   /* ------------------------------------------------------------------
-     Deployment Result Consumption
+     Read deployment result
   ------------------------------------------------------------------- */
 
   if (!fs.existsSync(deployResultPath)) {
     throw new Error(
-      `Deployment output file not found.\nHardhat output:\n${output}`
+      `Deployment result not found at ${deployResultPath}. deploy.js did not emit output.`
     );
   }
 
@@ -168,45 +175,14 @@ async function runHardhatDeploy({
 
   fs.unlinkSync(deployResultPath);
 
-  /* ------------------------------------------------------------------
-     Optional Etherscan Verification
-  ------------------------------------------------------------------- */
-
-  let verified = false;
-
-  try {
-    const args = constructorArgs.map((arg) =>
-      typeof arg === "string" ? `"${arg}"` : String(arg)
-    );
-
-    const verifyCmd =
-      args.length > 0
-        ? `${hardhatBin} verify --network ${network} ${deployResult.address} ${args.join(" ")}`
-        : `${hardhatBin} verify --network ${network} ${deployResult.address}`;
-
-    execSync(verifyCmd, {
-      cwd: projectRoot,
-      env: process.env,
-      encoding: "utf-8",
-      stdio: "pipe",
-      timeout: 2 * 60 * 1000,
-    });
-
-    verified = true;
-  } catch {
-    verified = false;
-  }
-
-  /* ------------------------------------------------------------------
-     Normalized Return
-  ------------------------------------------------------------------- */
+  console.log("[deploy] deployment completed successfully", deployResult);
 
   return {
     address: deployResult.address,
     txHash: deployResult.txHash || null,
     deployerAddress: deployResult.deployerAddress || null,
     network: deployResult.network || network,
-    verified,
+    verified: false,
   };
 }
 

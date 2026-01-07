@@ -1,345 +1,301 @@
 /**
- * ChainForge Solidity Contract Generators
+ * ChainForge Solidity Contract Generator
  *
- * This module programmatically generates OpenZeppelin-based Solidity contracts
- * for ERC20, ERC721, and ERC1155 standards.
+ * Purpose:
+ * - Compose audited Solidity templates into deployable contracts
+ * - Enforce ERC standard–specific feature compatibility
+ * - Produce deterministic, reviewable Solidity output
  *
- * Design goals:
- * - Deterministic, auditable contract generation
- * - No Solidity knowledge required from end users
- * - Modular feature composition without runtime mutation
+ * Design Principles:
+ * - No dynamic Solidity logic generation
+ * - No runtime mutation of contract behaviour
+ * - All executable logic lives in version-controlled templates
  *
- * NOTE:
- * Contracts are generated as plain Solidity source files and compiled
- * via Hardhat as part of the deployment pipeline.
+ * Operational Note (CRITICAL):
+ * - The Hardhat orchestrator ONLY reads contracts from:
+ *     {RUNTIME_BASE_DIR}/generated_contracts
+ * - Solidity MUST NOT be written anywhere else.
  */
 
 const fs = require("fs");
 const path = require("path");
+const { RUNTIME_BASE_DIR,generatedContractsDir } = require("./runtime");
 
 /* ------------------------------------------------------------------
-   Runtime-safe output directory
+   Runtime directory (IMPORTED — SINGLE SOURCE OF TRUTH)
 ------------------------------------------------------------------- */
 
-/**
- * Render (and similar platforms) provide a writable ephemeral filesystem
- * under /tmp. This base directory is configurable for local development
- * but defaults to a safe production location.
- */
-const RUNTIME_BASE_DIR = process.env.RUNTIME_BASE_DIR || "/tmp/chainforge";
-const GENERATED_CONTRACTS_DIR = path.join(
-  RUNTIME_BASE_DIR,
-  "generated_contracts"
-);
-
-// Ensure output directory exists
-if (!fs.existsSync(GENERATED_CONTRACTS_DIR)) {
-  fs.mkdirSync(GENERATED_CONTRACTS_DIR, { recursive: true });
+function ensureDir(dirPath) {
+  if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
 }
 
+ensureDir(generatedContractsDir);
+
+console.log("[generator] output dir:", generatedContractsDir);
+
+
 /* ------------------------------------------------------------------
-   Shared helpers
+   Helpers
 ------------------------------------------------------------------- */
 
 function sanitizeName(name) {
   return String(name || "").replace(/\s+/g, "").trim();
 }
 
-function writeContract(filename, source) {
-  const outputPath = path.join(GENERATED_CONTRACTS_DIR, filename);
-  fs.writeFileSync(outputPath, source, "utf-8");
-  return outputPath;
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
 }
 
+function normalizeModules(modules) {
+  if (!Array.isArray(modules)) return [];
+  return modules.map(String).map((m) => m.trim()).filter(Boolean);
+}
+function resolveOutputDir(outputDir) {
+  if (!outputDir) return generatedContractsDir;
+
+  return path.isAbsolute(outputDir)
+    ? outputDir
+    : path.resolve(process.cwd(), outputDir);
+}
+
+
 /* ------------------------------------------------------------------
-   ERC20 Generator
+   Generator
 ------------------------------------------------------------------- */
 
-function generateERC20Contract({
-  tokenName,
-  tokenSymbol,
-  initialSupply,
-  decimals,
-  modules = [],
-}) {
-  const timestamp = Date.now();
+function generateContract(
+  {
+    type,
+    tokenName,
+    tokenSymbol,
+    baseURI,
+    modules = [],
+  },
+  options = {}
+) {
+  console.log("[generator] generateContract invoked", {
+    type,
+    tokenName,
+    modules,
+  });
+
+  const cleanModules = normalizeModules(modules);
   const contractName = sanitizeName(tokenName);
-  const filename = `${contractName}_ERC20_${timestamp}.sol`;
+  assert(contractName, "tokenName is required");
 
-  const features = {
-    burnable: modules.includes("burnable"),
-    pausable: modules.includes("pausable"),
-    mintable: modules.includes("mintable"),
-    governance: modules.includes("governance"),
-    tokenTransfer: modules.includes("tokenTransfer"),
-  };
+  const imports = [];
+  const inheritance = [];
+  const constructorArgs = [];
+  const constructorCalls = [];
+  const constructorBody = [];
+  const overrideFunctions = [];
 
-  const imports = [
-    `import "@openzeppelin/contracts/token/ERC20/ERC20.sol";`,
-    `import "@openzeppelin/contracts/access/AccessControl.sol";`,
-  ];
+  const tpl = (p) => `import "../templates/${p}";`;
 
-  if (features.burnable) {
-    imports.push(
-      `import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";`
-    );
+  /* ---------------- ERC20 ---------------- */
+
+  if (type === "ERC20") {
+    assert(tokenSymbol, "tokenSymbol is required for ERC20");
+
+    imports.push(tpl("ERC20/ERC20Base.sol"));
+    inheritance.push("ERC20Base");
+
+    constructorArgs.push("string memory name_", "string memory symbol_");
+    constructorCalls.push("ERC20Base(name_, symbol_)");
+
+    if (cleanModules.includes("mintable")) {
+      imports.push(tpl("ERC20/ERC20Mintable.sol"));
+      inheritance.push("ERC20MintableFeature");
+      constructorBody.push(`_grantRole(MINTER_ROLE, msg.sender);`);
+    }
+
+    if (cleanModules.includes("burnable")) {
+      imports.push(tpl("ERC20/ERC20Burnable.sol"));
+      inheritance.push("ERC20BurnableFeature");
+    }
+
+    if (cleanModules.includes("pausable")) {
+      imports.push(
+        `import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Pausable.sol";`
+      );
+      imports.push(tpl("ERC20/ERC20Pausable.sol"));
+      inheritance.push("ERC20PausableFeature");
+      constructorBody.push(`_grantRole(PAUSER_ROLE, msg.sender);`);
+
+      overrideFunctions.push(`
+  function _update(address from, address to, uint256 value)
+    internal
+    override(ERC20, ERC20Pausable)
+  {
+    super._update(from, to, value);
+  }`);
+    }
+  }
+  /* ---------------- ERC721 ---------------- */
+
+if (type === "ERC721") {
+  assert(tokenSymbol, "tokenSymbol is required for ERC721");
+
+  imports.push(tpl("ERC721/ERC721Base.sol"));
+  inheritance.push("ERC721Base");
+
+  constructorArgs.push("string memory name_", "string memory symbol_");
+  constructorCalls.push("ERC721Base(name_, symbol_)");
+
+  if (cleanModules.includes("mintable")) {
+    imports.push(tpl("ERC721/ERC721Mintable.sol"));
+    inheritance.push("ERC721MintableFeature");
+    constructorBody.push(`_grantRole(MINTER_ROLE, msg.sender);`);
   }
 
-  if (features.pausable) {
-    imports.push(`import "@openzeppelin/contracts/utils/Pausable.sol";`);
+  if (cleanModules.includes("burnable")) {
+    imports.push(tpl("ERC721/ERC721Burnable.sol"));
+    inheritance.push("ERC721BurnableFeature");
+    constructorBody.push(`_grantRole(BURNER_ROLE, msg.sender);`);
   }
 
-  const inheritance = [
-    "ERC20",
-    "AccessControl",
-    features.burnable && "ERC20Burnable",
-    features.pausable && "Pausable",
-  ].filter(Boolean);
+  if (cleanModules.includes("pausable")) {
+    imports.push(tpl("ERC721/ERC721Pausable.sol"));
+    inheritance.push("ERC721PausableFeature");
+    constructorBody.push(`_grantRole(PAUSER_ROLE, msg.sender);`);
 
-  const roles = [
-    `bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");`,
-    features.pausable &&
-      `bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");`,
-    features.governance &&
-      `bytes32 public constant GOVERNANCE_ROLE = keccak256("GOVERNANCE_ROLE");`,
-  ].filter(Boolean);
+    // OZ v5 safe: our Pausable feature uses Pausable only, so we enforce pause here.
+    overrideFunctions.push(`
+  function _update(address to, uint256 tokenId, address auth)
+    internal
+    override(ERC721)
+    returns (address)
+  {
+    require(!paused(), "Pausable: paused");
+    return super._update(to, tokenId, auth);
+  }`);
+  }
+}
+  /* ---------------- ERC1155 ---------------- */
 
-  const resolvedDecimals =
-    Number.isFinite(Number(decimals)) && Number(decimals) > 0
-      ? Number(decimals)
-      : 18;
+  if (type === "ERC1155") {
+    assert(baseURI, "baseURI is required for ERC1155");
 
-  const constructorBody = [
-    `_customDecimals = uint8(${resolvedDecimals});`,
-    `_grantRole(DEFAULT_ADMIN_ROLE, msg.sender);`,
-    `_grantRole(MINTER_ROLE, msg.sender);`,
-    features.pausable && `_grantRole(PAUSER_ROLE, msg.sender);`,
-    features.governance && `_grantRole(GOVERNANCE_ROLE, msg.sender);`,
-    Number(initialSupply) > 0 &&
-      `_mint(msg.sender, initialSupply * (10 ** uint256(_customDecimals)));`,
-  ].filter(Boolean);
+    /**
+     * ERC1155 Base Contract (Single Root)
+     *
+     * ERC1155Base is the only contract that introduces:
+     * - ERC1155
+     * - AccessControl
+     *
+     * Design constraint:
+     * - Feature templates must remain logic-only.
+     * - Feature templates must not inherit ERC1155 (directly or via OZ extensions).
+     *   This prevents diamond inheritance and avoids _update / supportsInterface conflicts.
+     */
+    imports.push(tpl("ERC1155/ERC1155Base.sol"));
+    inheritance.push("ERC1155Base");
 
-  const functions = [];
+    constructorArgs.push("string memory uri_");
+    constructorCalls.push("ERC1155Base(uri_)");
 
-  functions.push(`
-    function decimals() public view override returns (uint8) {
-        return _customDecimals;
+    /**
+     * Mintable (logic-only feature)
+     *
+     * Requirements:
+     * - Template must inherit ERC1155Base (single chain)
+     * - Template implements mint/mintBatch and enforces MINTER_ROLE
+     *
+     * Generator responsibilities:
+     * - Include the module
+     * - Grant MINTER_ROLE to deployer at deployment time
+     */
+    if (cleanModules.includes("mintable")) {
+      imports.push(tpl("ERC1155/ERC1155Mintable.sol"));
+      inheritance.push("ERC1155MintableFeature");
+      constructorBody.push(`_grantRole(MINTER_ROLE, msg.sender);`);
     }
-  `);
 
-  if (features.mintable) {
-    functions.push(`
-    function mint(address to, uint256 amount)
-        public
-        onlyRole(MINTER_ROLE)
-    {
-        _mint(to, amount);
+    /**
+     * Burnable (logic-only feature)
+     *
+     * Requirements:
+     * - Template must inherit ERC1155Base
+     * - Template must NOT inherit OpenZeppelin ERC1155Burnable (it re-introduces ERC1155)
+     * - burn/burnBatch authorization must match OpenZeppelin semantics:
+     *   owner or approved operator
+     */
+    if (cleanModules.includes("burnable")) {
+      imports.push(tpl("ERC1155/ERC1155Burnable.sol"));
+      inheritance.push("ERC1155BurnableFeature");
     }
-    `);
+
+    /**
+     * Pausable (logic-only feature)
+     *
+     * Requirements:
+     * - Template must inherit ERC1155Base
+     * - Template must NOT inherit OpenZeppelin ERC1155Pausable (it re-introduces ERC1155)
+     * - Template must enforce pause at the transfer hook level by overriding _update
+     *
+     * Generator responsibilities:
+     * - Include the module
+     * - Grant PAUSER_ROLE to deployer at deployment time
+     *
+     * IMPORTANT:
+     * - Generator does not emit _update overrides.
+     * - Pausable enforcement lives inside the feature template to keep final contracts deterministic.
+     */
+    if (cleanModules.includes("pausable")) {
+      imports.push(tpl("ERC1155/ERC1155Pausable.sol"));
+      inheritance.push("ERC1155PausableFeature");
+      constructorBody.push(`_grantRole(PAUSER_ROLE, msg.sender);`);
+    }
+
+    /**
+     * Interface resolution
+     *
+     * supportsInterface is fully resolved inside ERC1155Base:
+     * - override(ERC1155, AccessControl)
+     *
+     * Generator must NOT emit supportsInterface overrides for ERC1155 variants.
+     *
+     * Rationale:
+     * - The final concrete contract does not directly inherit ERC1155
+     * - Referencing ERC1155 in an override list triggers:
+     *   "Invalid contract specified in override list"
+     *
+     * All interface resolution remains anchored in the single-root base.
+     */
   }
 
-  if (features.pausable) {
-    functions.push(`
-    function pause() public onlyRole(PAUSER_ROLE) { _pause(); }
-    function unpause() public onlyRole(PAUSER_ROLE) { _unpause(); }
-    `);
-  }
 
-  if (features.pausable || features.tokenTransfer) {
-    const checks = [];
-    if (features.pausable)
-      checks.push(`require(!paused(), "Token is paused");`);
-    checks.push(`super._update(from, to, value);`);
-
-    functions.push(`
-    function _update(address from, address to, uint256 value)
-        internal
-        override(ERC20)
-    {
-        ${checks.join("\n        ")}
-    }
-    `);
-  }
-
-  if (features.governance) {
-    functions.push(`
-    struct Proposal {
-        string description;
-        uint256 voteCount;
-        bool executed;
-    }
-
-    mapping(uint256 => Proposal) public proposals;
-
-    event ProposalCreated(uint256 id, string description);
-    event Voted(uint256 id, address voter, uint256 weight);
-    event ProposalExecuted(uint256 id);
-
-    function createProposal(uint256 id, string memory description)
-        public
-        onlyRole(GOVERNANCE_ROLE)
-    {
-        require(bytes(proposals[id].description).length == 0, "Already exists");
-        proposals[id] = Proposal(description, 0, false);
-        emit ProposalCreated(id, description);
-    }
-
-    function vote(uint256 id, uint256 weight) public {
-        Proposal storage p = proposals[id];
-        require(!p.executed, "Executed");
-        require(balanceOf(msg.sender) >= weight, "Insufficient balance");
-        p.voteCount += weight;
-        emit Voted(id, msg.sender, weight);
-    }
-
-    function executeProposal(uint256 id)
-        public
-        onlyRole(GOVERNANCE_ROLE)
-    {
-        Proposal storage p = proposals[id];
-        require(!p.executed, "Executed");
-        require(p.voteCount > 0, "No votes");
-        p.executed = true;
-        emit ProposalExecuted(id);
-    }
-    `);
-  }
-
-  const solidity = `// SPDX-License-Identifier: MIT
+  const source = `// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
 ${imports.join("\n")}
 
-contract ${contractName} is ${inheritance.join(", ")} {
-    ${roles.join("\n    ")}
-
-    uint8 private _customDecimals;
-
-    constructor(uint256 initialSupply)
-        ERC20("${tokenName}", "${tokenSymbol}")
-    {
-        ${constructorBody.join("\n        ")}
-    }
-
-    ${functions.join("\n")}
+contract ${contractName} is
+  ${inheritance.join(",\n  ")}
+{
+  constructor(${constructorArgs.join(", ")})
+    ${constructorCalls.join(", ")}
+  {
+    ${constructorBody.join("\n    ")}
+  }
+${overrideFunctions.join("\n")}
 }
 `;
 
-  writeContract(filename, solidity);
-  return [filename];
+  const filename = `${contractName}.sol`;
+
+const outDir = resolveOutputDir(options.outputDir);
+ensureDir(outDir);
+
+const outputPath = path.join(outDir, filename);
+fs.writeFileSync(outputPath, source, "utf-8");
+
+console.log("[generator] contract written to disk:", outputPath);
+
+return filename;
 }
-
-/* ------------------------------------------------------------------
-   ERC721 Generator
-------------------------------------------------------------------- */
-
-function generateERC721Contract({ tokenName, tokenSymbol }) {
-  const timestamp = Date.now();
-  const contractName = sanitizeName(tokenName);
-  const filename = `${contractName}_ERC721_${timestamp}.sol`;
-
-  const solidity = `// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
-
-import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
-
-contract ${contractName} is ERC721, AccessControl {
-    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
-    uint256 private _nextTokenId = 1;
-
-    constructor() ERC721("${tokenName}", "${tokenSymbol}") {
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(MINTER_ROLE, msg.sender);
-    }
-
-    function safeMint(address to)
-        public
-        onlyRole(MINTER_ROLE)
-        returns (uint256)
-    {
-        uint256 tokenId = _nextTokenId++;
-        _safeMint(to, tokenId);
-        return tokenId;
-    }
-
-    function supportsInterface(bytes4 interfaceId)
-        public
-        view
-        override(ERC721, AccessControl)
-        returns (bool)
-    {
-        return super.supportsInterface(interfaceId);
-    }
-}
-`;
-
-  writeContract(filename, solidity);
-  return [filename];
-}
-
-/* ------------------------------------------------------------------
-   ERC1155 Generator
-------------------------------------------------------------------- */
-
-function generateERC1155Contract({ tokenName, baseURI }) {
-  const timestamp = Date.now();
-  const contractName = sanitizeName(tokenName);
-  const filename = `${contractName}_ERC1155_${timestamp}.sol`;
-
-  const solidity = `// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
-
-import "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
-
-contract ${contractName} is ERC1155, AccessControl {
-    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
-
-    constructor(string memory uri) ERC1155(uri) {
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(MINTER_ROLE, msg.sender);
-    }
-
-    function mint(address to, uint256 id, uint256 amount)
-        public
-        onlyRole(MINTER_ROLE)
-    {
-        _mint(to, id, amount, "");
-    }
-
-    function mintBatch(
-        address to,
-        uint256[] memory ids,
-        uint256[] memory amounts
-    )
-        public
-        onlyRole(MINTER_ROLE)
-    {
-        _mintBatch(to, ids, amounts, "");
-    }
-
-    function supportsInterface(bytes4 interfaceId)
-        public
-        view
-        override(ERC1155, AccessControl)
-        returns (bool)
-    {
-        return super.supportsInterface(interfaceId);
-    }
-}
-`;
-
-  writeContract(filename, solidity);
-  return [filename];
-}
-
 /* ------------------------------------------------------------------
    Exports
 ------------------------------------------------------------------- */
 
-module.exports = {
-  generateERC20Contract,
-  generateERC721Contract,
-  generateERC1155Contract,
-};
+module.exports = { generateContract };
