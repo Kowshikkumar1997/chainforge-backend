@@ -287,6 +287,50 @@ app.post("/create-token", async (req, res) => {
 });
 
 /* ------------------------------------------------------------------
+   Create Chain Scaffold
+------------------------------------------------------------------- */
+
+app.post("/create-chain", async (req, res) => {
+  try {
+    const { chainName, consensusType, modules = [] } = req.body || {};
+
+    if (!chainName) {
+      return res.status(400).json({ message: "chainName is required" });
+    }
+
+    if (!consensusType) {
+      return res.status(400).json({ message: "consensusType is required" });
+    }
+
+    const outputDir = path.join(process.cwd(), "generated_chains");
+    ensureDir(outputDir);
+
+    const chainDir = path.join(outputDir, chainName);
+    ensureDir(chainDir);
+
+    const readme = `# ${chainName}
+
+Consensus: ${consensusType}
+Modules: ${modules.join(", ") || "none"}
+Generated At: ${new Date().toISOString()}
+`;
+
+    fs.writeFileSync(path.join(chainDir, "README.md"), readme);
+
+    const zipPath = path.join(outputDir, `${chainName}_chain.zip`);
+    await zipFolder(chainDir, zipPath);
+
+    res.json({
+      message: "Chain scaffold generated successfully",
+      download: `/generated_chains/${chainName}_chain.zip`,
+    });
+  } catch (err) {
+    console.error("[create-chain] failed", err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+/* ------------------------------------------------------------------
    Deployment History
 ------------------------------------------------------------------- */
 
