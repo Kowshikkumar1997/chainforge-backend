@@ -290,6 +290,21 @@ app.post("/create-token", async (req, res) => {
    Create Chain Scaffold
 ------------------------------------------------------------------- */
 
+function zipFolderToFile(sourceDir, zipPath) {
+  return new Promise((resolve, reject) => {
+    const output = fs.createWriteStream(zipPath);
+    const archive = archiver("zip", { zlib: { level: 9 } });
+
+    output.on("close", resolve);
+    output.on("error", reject);
+    archive.on("error", reject);
+
+    archive.pipe(output);
+    archive.directory(sourceDir, false);
+    archive.finalize();
+  });
+}
+
 app.post("/create-chain", async (req, res) => {
   try {
     const { chainName, consensusType, modules = [] } = req.body || {};
@@ -302,7 +317,7 @@ app.post("/create-chain", async (req, res) => {
       return res.status(400).json({ message: "consensusType is required" });
     }
 
-    const outputDir = path.join(process.cwd(), "generated_chains");
+    const outputDir = generatedChainsDir;
     ensureDir(outputDir);
 
     const chainDir = path.join(outputDir, chainName);
@@ -317,16 +332,27 @@ Generated At: ${new Date().toISOString()}
 
     fs.writeFileSync(path.join(chainDir, "README.md"), readme);
 
-    const zipPath = path.join(outputDir, `${chainName}_chain.zip`);
-    await zipFolder(chainDir, zipPath);
+    const zipFilename = `${chainName}_chain.zip`;
+    const zipPath = path.join(outputDir, zipFilename);
 
-    res.json({
+    await zipFolderToFile(chainDir, zipPath);
+
+    if (!fs.existsSync(zipPath)) {
+      throw new Error(`Chain zip was not created: ${zipPath}`);
+    }
+
+    const stat = fs.statSync(zipPath);
+    console.log("[create-chain] zip generated", { zipPath, bytes: stat.size });
+
+    console.log("[create-chain] generated_chains contents:", fs.readdirSync(outputDir));
+
+    return res.json({
       message: "Chain scaffold generated successfully",
-      download: `/generated_chains/${chainName}_chain.zip`,
+      download: `/generated_chains/${zipFilename}`,
     });
   } catch (err) {
     console.error("[create-chain] failed", err);
-    res.status(500).json({ message: err.message });
+    return res.status(500).json({ message: err.message });
   }
 });
 
