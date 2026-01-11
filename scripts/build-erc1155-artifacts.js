@@ -16,6 +16,7 @@ const { generateContract } = require("../utils/generateSolidityContract");
 
 const GENERATED_DIR = path.join(__dirname, "..", "contracts", "__generated__");
 const OUTPUT_DIR = path.join(__dirname, "..", "artifacts-precompiled");
+const { RUNTIME_BASE_DIR } = require("../utils/runtime");
 
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -74,13 +75,64 @@ function main() {
       throw new Error(`Missing artifact: ${artifactPath}`);
     }
 
-    const outFile = path.join(OUTPUT_DIR, `ERC1155__${v.key}.json`);
+    const artifactKey = `ERC1155__${v.key}`;
+    const outFile = path.join(OUTPUT_DIR, `${artifactKey}.json`);
+    
     fs.copyFileSync(artifactPath, outFile);
-
     console.log("[build:erc1155] →", outFile);
+    exportVerifyPayload({
+      artifactKey,
+      contractName,
+      sourceName: `contracts/__generated__/${contractName}.sol`,
+    });
+
   }
 
   console.log("[build:erc1155] completed");
+}
+function exportVerifyPayload({ artifactKey, contractName, sourceName }) {
+  const buildInfoDir = path.join(__dirname, "..", "artifacts", "build-info");
+
+  const files = fs
+    .readdirSync(buildInfoDir)
+    .filter(f => f.endsWith(".json"))
+    .map(f => ({
+      name: f,
+      path: path.join(buildInfoDir, f),
+    }));
+
+  if (!files.length) {
+    throw new Error("No Hardhat build-info found");
+  }
+
+  let matched = null;
+
+  for (const f of files) {
+    const json = JSON.parse(fs.readFileSync(f.path, "utf-8"));
+    if (json.input?.sources?.[sourceName]) {
+      matched = json;
+      break;
+    }
+  }
+
+  if (!matched) {
+    throw new Error(`No build-info matched source: ${sourceName}`);
+  }
+
+  const payload = {
+    contractName,
+    sourceName,
+    compilerVersion: matched.solcLongVersion.startsWith("v")
+      ? matched.solcLongVersion
+      : `v${matched.solcLongVersion}`,
+    standardJsonInput: matched.input,
+    generatedAt: new Date().toISOString(),
+  };
+
+  const outPath = path.join(OUTPUT_DIR, `${artifactKey}.verify.json`);
+  fs.writeFileSync(outPath, JSON.stringify(payload, null, 2));
+
+  console.log("[build:erc1155] verify →", outPath);
 }
 
 main();

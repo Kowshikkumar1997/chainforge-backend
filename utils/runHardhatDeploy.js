@@ -19,14 +19,13 @@
  * This module is intentionally minimal, explicit, and auditable.
  */
 
+
 console.log("[BOOT] runHardhatDeploy loaded:", __filename);
 
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const { RUNTIME_BASE_DIR } = require("./runtime");
-
-console.log("[runtime] RUNTIME_BASE_DIR =", RUNTIME_BASE_DIR);
 
 /* ------------------------------------------------------------------
    Helpers
@@ -61,10 +60,6 @@ async function runHardhatDeploy({
     );
   }
 
-  /* ------------------------------------------------------------------
-     Runtime invariants
-  ------------------------------------------------------------------- */
-
   ensureDir(RUNTIME_BASE_DIR);
 
   const generatedContractPath = path.join(
@@ -84,10 +79,6 @@ async function runHardhatDeploy({
     "deploy-result.json"
   );
 
-  /* ------------------------------------------------------------------
-     Hardhat binary resolution (repository-owned)
-  ------------------------------------------------------------------- */
-
   const repoRoot = path.join(__dirname, "..");
   const hardhatConfigPath = path.join(repoRoot, "hardhat.config.js");
 
@@ -99,13 +90,6 @@ async function runHardhatDeploy({
   if (!fs.existsSync(hardhatBin)) {
     throw new Error(`Hardhat binary not found at: ${hardhatBin}`);
   }
-
-  console.log("[deploy] hardhat binary:", hardhatBin);
-  console.log("[deploy] hardhat execution cwd:", repoRoot);
-
-  /* ------------------------------------------------------------------
-     Prepare execution environment
-  ------------------------------------------------------------------- */
 
   if (fs.existsSync(deployResultPath)) {
     fs.unlinkSync(deployResultPath);
@@ -136,16 +120,12 @@ async function runHardhatDeploy({
     args: args.join(" "),
   });
 
-  /* ------------------------------------------------------------------
-     Hardhat execution
-  ------------------------------------------------------------------- */
-
   const result = spawnSync(hardhatBin, args, {
-    cwd: repoRoot,               // REQUIRED for HH12
+    cwd: repoRoot,
     env,
     stdio: "inherit",
     windowsHide: true,
-    shell: true,                 // REQUIRED for .cmd on Windows
+    shell: true,
     timeout: 15 * 60 * 1000,
   });
 
@@ -159,10 +139,6 @@ async function runHardhatDeploy({
     throw new Error(`Hardhat failed with exit code: ${result.status}`);
   }
 
-  /* ------------------------------------------------------------------
-     Read deployment result
-  ------------------------------------------------------------------- */
-
   if (!fs.existsSync(deployResultPath)) {
     throw new Error(
       `Deployment result not found at ${deployResultPath}. deploy.js did not emit output.`
@@ -173,8 +149,6 @@ async function runHardhatDeploy({
     fs.readFileSync(deployResultPath, "utf-8")
   );
 
-  fs.unlinkSync(deployResultPath);
-
   console.log("[deploy] deployment completed successfully", deployResult);
 
   return {
@@ -182,7 +156,11 @@ async function runHardhatDeploy({
     txHash: deployResult.txHash || null,
     deployerAddress: deployResult.deployerAddress || null,
     network: deployResult.network || network,
-    verified: false,
+
+    constructorArgs: deployResult.constructorArgs || [],
+    constructorArgsEncoded: deployResult.constructorArgsEncoded || "",
+
+    deploymentPath: deployResultPath,
   };
 }
 

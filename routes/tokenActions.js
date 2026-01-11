@@ -57,6 +57,7 @@ function loadArtifactAbi(contractFileName, contractNameOptional) {
     "..",
     "artifacts",
     "contracts",
+    "__generated__",
     safeFileName
   );
 
@@ -105,6 +106,7 @@ function getContract(contractAddress, contractFileName, contractNameOptional) {
 
   const rpcUrl = requireEnv("SEPOLIA_RPC_URL");
   const privateKey = requireEnv("DEPLOYER_PRIVATE_KEY");
+  console.log("RPC URL =", rpcUrl);
 
   const provider = new ethers.JsonRpcProvider(rpcUrl);
   const signer = new ethers.Wallet(privateKey, provider);
@@ -187,9 +189,9 @@ exports.checkBalance = async (req, res) => {
       id,
     } = req.body || {};
 
-    if (!contractAddress || !contractFileName || !wallet || !tokenType) {
+    if (!contractAddress || !contractFileName || !contractName || !wallet || !tokenType) {
       return res.status(400).json({
-        error: "Missing required fields: contractAddress, contractFileName, wallet, tokenType",
+        error: "Missing required fields: contractAddress, contractFileName, contractName, wallet, tokenType",
       });
     }
 
@@ -207,16 +209,29 @@ exports.checkBalance = async (req, res) => {
 
     if (tokenType === "ERC20") {
       balance = await contract.balanceOf(wallet);
-    } else if (tokenType === "ERC721") {
+    }
+
+    if (tokenType === "ERC721") {
       balance = await contract.balanceOf(wallet);
-    } else if (tokenType === "ERC1155") {
+    }
+
+    if (tokenType === "ERC1155") {
       const tokenId = parsePositiveInt(id, "id");
       balance = await contract.balanceOf(wallet, tokenId);
     }
 
-    return res.json({ balance: balance.toString() });
+    return res.json({
+      wallet,
+      contractAddress,
+      tokenType,
+      balance: balance.toString(),
+    });
   } catch (err) {
-  console.error("[token-actions][balance] Failed:", err.message);
-  return res.status(500).json({ error: "Balance check failed." });
-}
+    console.error("[token-actions][balance] Failed:");
+    console.error(err);
+    return res.status(500).json({
+      error: "Balance check failed.",
+      message: err.message,
+    });
+  }
 };

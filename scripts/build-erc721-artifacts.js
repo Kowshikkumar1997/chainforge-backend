@@ -1,14 +1,14 @@
 /**
- * ChainForge — ERC721 Artifact Builder (Local Only)
+ * ChainForge — ERC721 Artifact Builder (Build-Time Only)
  *
- * Purpose:
- * - Generate supported ERC721 variants into contracts/__generated__
- * - Compile once using Hardhat (local)
- * - Export production artifacts into artifacts-precompiled/
+ * Responsibilities:
+ * - Generate supported ERC721 Solidity variants
+ * - Compile with Hardhat
+ * - Export runtime deployment artifacts
+ * - Export Etherscan verification payloads
  *
- * Constraints:
- * - This script must never run in production
- * - Runtime deployments must consume only artifacts-precompiled/
+ * Runtime contracts MUST consume only artifacts-precompiled/.
+ * This script must never run in production environments.
  */
 
 const path = require("path");
@@ -16,6 +16,7 @@ const fs = require("fs");
 const { execSync } = require("child_process");
 
 const { generateContract } = require("../utils/generateSolidityContract");
+const { exportVerifyPayload } = require("./_exportVerificationPayload");
 
 const REPO_ROOT = path.join(__dirname, "..");
 const GENERATED_DIR = path.join(REPO_ROOT, "contracts", "__generated__");
@@ -34,7 +35,7 @@ function cleanDirFilesOnly(dir) {
 }
 
 /**
- * Supported ERC721 variants (Phase 1)
+ * Supported ERC721 variants
  */
 const VARIANTS = [
   { key: "base", modules: [] },
@@ -64,7 +65,9 @@ function main() {
 
   console.log("[build:erc721] starting");
 
-  cleanDirFilesOnly(GENERATED_DIR);
+  if (!process.argv.includes("--no-clean")) {
+    cleanDirFilesOnly(GENERATED_DIR);
+  }
 
   console.log("[build:erc721] generating solidity variants");
 
@@ -85,31 +88,44 @@ function main() {
   }
 
   console.log("[build:erc721] compiling (hardhat)");
+
   const hardhatBin =
-  process.platform === "win32"
-    ? path.join(REPO_ROOT, "node_modules", ".bin", "hardhat.cmd")
-    : path.join(REPO_ROOT, "node_modules", ".bin", "hardhat");
+    process.platform === "win32"
+      ? path.join(REPO_ROOT, "node_modules", ".bin", "hardhat.cmd")
+      : path.join(REPO_ROOT, "node_modules", ".bin", "hardhat");
 
-if (!fs.existsSync(hardhatBin)) {
-  throw new Error(`Hardhat binary not found at ${hardhatBin}`);
-}
+  if (!fs.existsSync(hardhatBin)) {
+    throw new Error(`Hardhat binary not found at ${hardhatBin}`);
+  }
 
-execSync(`"${hardhatBin}" compile`, { stdio: "inherit" });
+  execSync(`"${hardhatBin}" compile`, { stdio: "inherit" });
 
-  console.log("[build:erc721] exporting artifacts");
+  console.log("[build:erc721] exporting artifacts + verification payloads");
 
   for (const variant of VARIANTS) {
     const contractName = `ERC721_${variant.key}`;
+    const artifactKey = `ERC721__${variant.key}`;
+
     const src = artifactPathFor(contractName);
 
     if (!fs.existsSync(src)) {
       throw new Error(`[build:erc721] missing hardhat artifact: ${src}`);
     }
 
-    const dest = path.join(OUTPUT_DIR, `ERC721__${variant.key}.json`);
+    const dest = path.join(OUTPUT_DIR, `${artifactKey}.json`);
     fs.copyFileSync(src, dest);
 
-    console.log("[build:erc721] exported:", dest);
+    console.log("[build:erc721] exported artifact:", dest);
+
+    // ---- Verification payload export ----
+    exportVerifyPayload({
+      projectRoot: REPO_ROOT,
+      artifact: {
+        artifactKey,
+        contractName,
+        sourceName: `contracts/__generated__/${contractName}.sol`,
+      },
+    });
   }
 
   console.log("[build:erc721] completed successfully");

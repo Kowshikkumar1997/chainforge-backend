@@ -13,9 +13,8 @@
  * Architectural guarantees:
  * - Exactly one contract is deployed per execution
  * - No shared mutable state between deployments
- * - No dependency on repository-local artifacts or paths
- *
- * This script is intentionally minimal, deterministic, and auditable.
+ * - Deterministic output suitable for CI/CD and audit workflows
+ * - Verification pipeline compatibility (Etherscan / Sourcify)
  */
 
 const hre = require("hardhat");
@@ -27,21 +26,17 @@ const path = require("path");
 ------------------------------------------------------------------- */
 
 async function main() {
-  /* ------------------------------------------------------------------
-     Environment Validation (Fail Fast)
-  ------------------------------------------------------------------- */
-
   const {
     CONTRACT_NAME,
     CONSTRUCTOR_ARGS,
     DEPLOY_RESULT_PATH,
   } = process.env;
 
-  if (typeof CONTRACT_NAME !== "string" || CONTRACT_NAME.trim().length === 0) {
+  if (!CONTRACT_NAME?.trim()) {
     throw new Error("Missing or invalid environment variable: CONTRACT_NAME");
   }
 
-  if (typeof DEPLOY_RESULT_PATH !== "string" || DEPLOY_RESULT_PATH.trim().length === 0) {
+  if (!DEPLOY_RESULT_PATH?.trim()) {
     throw new Error("Missing or invalid environment variable: DEPLOY_RESULT_PATH");
   }
 
@@ -63,26 +58,19 @@ async function main() {
   }
 
   /* ------------------------------------------------------------------
-     Execution Context Logging
+     Execution Context
   ------------------------------------------------------------------- */
 
   console.log("[deploy] Execution started");
   console.log("[deploy] Network:", hre.network.name);
   console.log("[deploy] Contract name:", CONTRACT_NAME);
   console.log("[deploy] Constructor arguments:", constructorArgs);
-  console.log("[deploy] Hardhat sources directory:", hre.config.paths.sources);
 
   /* ------------------------------------------------------------------
      Compilation
   ------------------------------------------------------------------- */
 
-  /**
-   * Compilation is explicitly invoked to guarantee:
-   * - Fresh artifacts
-   * - No reliance on stale cache
-   * - Deterministic behavior across ephemeral environments
-   */
-  console.log("[deploy] Compiling contracts (runtime scope)");
+  console.log("[deploy] Compiling contracts");
   await hre.run("compile");
 
   /* ------------------------------------------------------------------
@@ -95,27 +83,40 @@ async function main() {
     throw new Error("No deployer account available in Hardhat runtime");
   }
 
-  console.log("[deploy] Deployer address:", deployer.address);
+  console.log("[deploy] Deployer:", deployer.address);
 
   const ContractFactory = await hre.ethers.getContractFactory(CONTRACT_NAME);
 
-  const contract = await ContractFactory.deploy(...constructorArgs);
+  const deployTxRequest = await ContractFactory.getDeployTransaction(
+    ...constructorArgs
+  );
 
-  /**
-   * Explicit wait ensures:
-   * - Deployment transaction is mined
-   * - Contract address is stable before emitting result
-   */
-  await contract.waitForDeployment();
+  const deployedContract = await ContractFactory.deploy(...constructorArgs);
+  await deployedContract.waitForDeployment();
 
-  const address = await contract.getAddress();
-  const deploymentTx = contract.deploymentTransaction();
+  const address = await deployedContract.getAddress();
+  const deploymentTx = deployedContract.deploymentTransaction();
 
-  console.log("[deploy] Contract deployed at:", address);
-  console.log("[deploy] Deployment transaction hash:", deploymentTx?.hash || "N/A");
+  console.log("[deploy] Contract address:", address);
+  console.log("[deploy] Transaction hash:", deploymentTx?.hash || "N/A");
 
   /* ------------------------------------------------------------------
-     Deployment Artifact Emission
+     Constructor Argument Encoding (for verification)
+  ------------------------------------------------------------------- */
+
+  let encodedConstructorArgs = "";
+
+  if (deployTxRequest?.data && ContractFactory.bytecode) {
+    const fullData = deployTxRequest.data.replace("0x", "");
+    const bytecode = ContractFactory.bytecode.replace("0x", "");
+
+    if (fullData.startsWith(bytecode)) {
+      encodedConstructorArgs = fullData.slice(bytecode.length);
+    }
+  }
+
+  /* ------------------------------------------------------------------
+     Deployment Artifact
   ------------------------------------------------------------------- */
 
   const deploymentResult = {
@@ -124,6 +125,14 @@ async function main() {
     deployerAddress: deployer.address,
     network: hre.network.name,
     contractName: CONTRACT_NAME,
+
+    constructorArgs: constructorArgs,
+    constructorArgsEncoded: encodedConstructorArgs,
+
+    verificationStatus: "not_requested",
+    verificationMessage: "",
+    etherscanUrl: "",
+
     deployedAt: new Date().toISOString(),
   };
 
@@ -139,11 +148,6 @@ async function main() {
   console.log("[deploy] Deployment artifact written:", DEPLOY_RESULT_PATH);
   console.log("[deploy] Execution completed successfully");
 
-  /**
-   * CRITICAL:
-   * Explicit exit ensures the parent process (spawnSync)
-   * receives a clean termination signal.
-   */
   process.exit(0);
 }
 
